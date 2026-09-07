@@ -44,9 +44,9 @@
 | --- | --- | --- |
 | 日常刷机 | `firmware` | `ubi_write_production`：删 `fit` 与 `rootfs_data`，按文件长度重建 `fit` 写入 |
 | 引导升级 | `bl2` `fip` `firmware`（可选） `format` | BL2 走 `mtd`；FIP 在位写 `fip` 卷；勾了「重建 UBI」先整个擦掉 `ubi` 分区 |
-| 刷回原厂 | `stock` `stockoff` | 裸设备 `mtd erase` + `mtd write`，偏移由 `stockoff` 给，默认 `0x0` 整片 |
+| 刷回原厂 | `stock` `stockoff` | 裸设备逐块 `mtd_erase()` + `mtd_write()`，**位置保持**；偏移由 `stockoff` 给（须按擦除块对齐），默认 `0x0` 整片 |
 | 创建 UBI 卷 | `fvol_<name>`… `ubivol` `ubifile` `stay` | 出厂数据卷按 `HTTPD_FACTORY_VOLS` 校验长度后 `ubi write`；任意卷 `ubi check \|\| ubi create` 再写；`stay` 写完不重启 |
-| 备份下载 | — | `GET /dump?vol=<名>` 走 `ubi read`，`GET /dump?off=&len=` 走 `mtd read`（和「刷回原厂」的 `mtd write` 同一条路，所以来回一致）。流式，只在内存里拿一个窗口；`len` 留空表示读到片尾，长度由设备扣掉坏块后算；`GET /dumpinfo` 回最近一次的 crc32，见[下下节](#030-续心跳备份环境重启) |
+| 备份下载 | — | `GET /dump?vol=<名>` 走 `ubi read`，`GET /dump?off=&len=` 直接调 `mtd_read()`，**位置保持**（文件偏移 == flash 偏移，与 `dd` 同格式）。流式，只在内存里拿一个窗口；`len` 留空表示读到片尾；`GET /dumpinfo` 回最近一次的 crc32 与读不出的块数，见[下下节](#030-续心跳备份环境重启) |
 | 设备详情 | — | `GET /info` 返回 JSON：设备树 `model` / `compatible`、DRAM、MTD 几何与分区、MAC、U-Boot 版本、UBI 卷表（含有没有 `fip` 卷）。卷表按卷名排序，ID 列是 UBI 卷号（按创建先后分配，不同迁移路径得到的号不同）；卷没有固定物理地址，所以不列 |
 | 健康检查 | — | `GET /check`，16 项分五组，见[下一节](#030拦截横幅体检日志)与[下下节](#030-续心跳备份环境重启) |
 | 环境变量 | — | `GET /env` 只读列出全部 env；`GET /envreset` 跑 `env default -a && saveenv` |
@@ -98,7 +98,7 @@
 
 **备份下载（`GET /dump`）。** 侧栏单独一页。UBI 卷逐个一行，`ri` / `bosa` 排最前并标「出厂数据」；下面一块按 flash 偏移与长度取任意区段，「整片下载」把偏移归零、长度留空。
 
-**原厂机能不能用它备份？** 能，但要先有串口。原厂跑的是 tcboot，那里面没有这个页面 —— 得先做[首次迁移](#首次迁移从-tcboot--原厂-换到-ubi-布局)的 ①②，串口 xmodem 把 preloader 与 fip 送进 RAM，让我们的 U-Boot 在内存里起来。**这两步一个字节都不写闪存**，所以进到网页那一刻闪存还是完整的原厂内容。原厂布局没有 UBI，卷列表会直接说「UBI 未挂载，只能用下面的原始区段」——而原始区段读的是**裸 mtd 主设备，不经过 UBI，也不看分区表**，所以私有布局照样读得出来，`romfile`、`config` 这些也都在里面。偏移 0、长度 `0xEBA0000` 就是原厂的 `all_flash`；连原厂不用的尾部一起要就把长度留空（别填 `0x10000000`，见下面「整片有多大」）。原厂系统还进得去的话，[U 盘 dd](backup-and-restore.md) 那条路更全（逐分区、带 md5）；`/dump` 补的是「系统进不去、但还能接串口」的那一档。
+**原厂机能不能用它备份？** 能，但要先有串口。原厂跑的是 tcboot，那里面没有这个页面 —— 得先做[首次迁移](#首次迁移从-tcboot--原厂-换到-ubi-布局)的 ①②，串口 xmodem 把 preloader 与 fip 送进 RAM，让我们的 U-Boot 在内存里起来。**这两步一个字节都不写闪存**，所以进到网页那一刻闪存还是完整的原厂内容。原厂布局没有 UBI，卷列表会直接说「UBI 未挂载，只能用下面的原始区段」——而原始区段读的是**裸 mtd 主设备，不经过 UBI，也不看分区表**，所以私有布局照样读得出来，`romfile`、`config` 这些也都在里面。偏移 0、长度 `0xEBA0000` 就是原厂的 `all_flash`；连原厂不用的尾部一起要就把长度留空（等同 `0x10000000`）。原厂系统还进得去的话，[U 盘 dd](backup-and-restore.md) 那条路更全（逐分区、带 md5）；`/dump` 补的是「系统进不去、但还能接串口」的那一档。
 
 要紧的是**它补上的那个时间窗**：首次迁移的 ① ② 两步全在 RAM 里跑，进到网页那一刻闪存还是完整的原厂内容，而下一步勾「重建 UBI」就把 `ri`（MAC、SN）、`bosa`（光模块校准）一起擦了。[原厂备份](backup-and-restore.md)那条 telnet + U 盘 dd 的路更全（还能拿到 `romfile`、有 md5），但前提是原厂系统还进得去。`/dump` 服务的是**系统已经进不去、或者当时忘了备份、人已经站在网页上**的情况 —— 那时它是唯一还能抢救出厂数据的机会。「引导升级」的重建开关旁和「刷回原厂」的说明里各有一句话指向它。
 
@@ -143,20 +143,58 @@
 下载也不会让谁拿到坏备份：crc32 只在向前那一遍累加，接管之后序号根本
 不会跳，`/dumpinfo` 就是不报。
 
-原始区段读取自己按块循环、按和 `mtd` 命令一样的规则跳过坏块 ——
-不是为了好玩，而是 `mtd read` 不告诉你它跳到哪了，分窗口就接不上。
+### 位置保持：文件偏移就是 flash 偏移
 
-**整片有多大：不是标称容量。** 跳过坏块的直接后果，是一片 256 MiB 的
-闪存交不出 256 MiB —— 少的正是坏块。所以 `/info` 的 `flash` 里除了
-`size`（标称）还有一个 `good`（`flash_good_bytes()` 扫一遍全片算出的
-可读字节数），页面的「整片下载」按它来，长度干脆留空、由设备自己数。
-这不是细枝末节：照 `size` 去要，读到最后一个窗口就会走出片尾，一份两百
-多兆的备份**在快传完的时候**才失败 —— 而 NAND 出厂就允许带坏块。
+坏块的处理有两种做法，差别不在代码量而在**这份文件跟谁通用**。
 
-写回去是对称的：`mtd write` 同样跳过坏块，少掉的字节正是写入时同样会
-跳过的那些块，位置对得上。前提是**坏块表没变** —— 备份之后新长出来的
-坏块，会让它后面的一切整体往前挪一个块。这是 NAND 裸备份共有的性质，
-不是这里的实现选择。
+`cmd/mtd.c` 里 `mtd read` / `mtd write` 共用的那个循环是**压缩式**的：
+
+```c
+if (mtd_is_aligned_with_block_size(mtd, off) && mtd_block_isbad(mtd, off)) {
+        off += mtd->erasesize;
+        continue;              /* io_op.datbuf 不动 */
+}
+```
+
+flash 偏移前进而内存指针不动，于是文件里第 N 个字节落在哪，取决于它
+前面有几个坏块。0.3.0 起初两侧都照着它做，结果是**只和自己通用**：
+社区里流传的原厂 `all_flash.bin` 基本都是 `dd if=/dev/mtd0` 出来的
+（坏块在文件里占着位子），这种文件写进一台有坏块的机器，坏块之后的
+一切整体前移一个擦除块 —— 而原厂引导按绝对偏移找东西。
+
+现在两侧都是**位置保持**，和 `dd` 同格式：
+
+| | `dd if=/dev/mtd0` | `/dump` 与「刷回原厂」 |
+| --- | --- | --- |
+| 文件偏移 ↔ flash 偏移 | 恒等 | 恒等 |
+| 读到坏块 | 照读 | **照读**，读失败才填 `0xff` 并记一笔 |
+| 写到坏块 | 照写（写不进去） | 跳过不写，**源指针照常前进** |
+
+读侧因此**根本不看坏块标记** —— `mtd_read()` 自己不跳，跳过的逻辑
+本来就是我们加的。被软件标坏但内容还在的块（用久了磨损标坏的那种）
+也就跟着捞回来了。只有 `mtd_read()` 真的失败（`-EBADMSG`，ECC 纠不
+回来）才填 `0xff`，那时本来也没有别的东西可给。这同时修掉一个毛病：
+以前一个块读不出，整份 235 MiB 的备份直接中止。
+
+写侧那道 `mtd_block_isbad()` 则不能省，而且是**承重**的。`nanddev_erase()`：
+
+```c
+if (nanddev_isbad(nand, pos) || nanddev_isreserved(nand, pos)) {
+        if (nanddev_isreserved(nand, pos)) return -EIO;
+        /* remove bad block from BBT */
+        nanddev_bbt_set_block_status(nand, entry, NAND_BBT_BLOCK_STATUS_UNKNOWN);
+}
+return nand->ops->erase(nand, pos);
+```
+
+对坏块它**把 BBT 条目摘掉再照擦不误** —— 擦除连 OOB 一起擦，出厂坏块
+标记就在 OOB 第 0 字节。那块从此被当好块用，以后往里存的东西会静静
+地坏掉。命令层的 `mtd erase` 有 isbad 保护，`mtd_erase()` 这个 API
+没有，所以逐块循环里那道检查是唯一的防线。
+
+剩下不完美的一点是物理性的：**块死了就是死了**。备份之后新坏一块，
+它的内容取不回来 —— 但损伤是局部的（丢那一块），而不是压缩式下的
+全局错位。串口日志里会列出跳过的块地址。
 
 **能核对的备份才是备份。** 传完后 `GET /dumpinfo` 回报名字、长度与
 crc32。页面读不到隐藏 frame 的**响应头**，所以它先问一次记下序号、再开始
@@ -623,7 +661,7 @@ httpd: refusing 0 byte upload
 
 每次改动都跑三层，真机编译一次约 1.5 小时，所以前两层要在本地过：
 
-1. **页面** —— `files/httpd/test/` 里的 jsdom 用例，120 个，`cd files/httpd/test && npm install && npm test`（用例自己会先跑 `preview.py` 渲染，不会拿到过期的 HTML）。改动落在 httpd 目录时 CI 跟着跑，见 `.github/workflows/httpd-page-test.yml`。覆盖：`/info` 填表与失败降级、每一页的确认框内容与拦截条件、实际提交的 `FormData` 字段集、多文件上传进度按累计长度定位、200 / 400 / 断网三种结局、「不重启」留页并靠心跳回报、备份下载的 URL 与越界拦截、环境变量的过滤与恢复默认、体检分组、心跳的两次失败判定与三种覆盖层、长时间静默只变点不弹框、整片下载是一个文件、传完报出 crc32 且多份往下排不覆盖、作者链接。跑的是真实的页面源文件，不是复制品
+1. **页面** —— `files/httpd/test/` 里的 jsdom 用例，125 个，`cd files/httpd/test && npm install && npm test`（用例自己会先跑 `preview.py` 渲染，不会拿到过期的 HTML）。改动落在 httpd 目录时 CI 跟着跑，见 `.github/workflows/httpd-page-test.yml`。覆盖：`/info` 填表与失败降级、每一页的确认框内容与拦截条件、实际提交的 `FormData` 字段集、多文件上传进度按累计长度定位、200 / 400 / 断网三种结局、「不重启」留页并靠心跳回报、备份下载的 URL 与越界拦截、环境变量的过滤与恢复默认、体检分组、心跳的两次失败判定与三种覆盖层、长时间静默只变点不弹框、整片下载是一个文件、传完报出 crc32 且多份往下排不覆盖、作者链接。跑的是真实的页面源文件，不是复制品
 2. **编译** —— 整个补丁序列打到纯净的 U-Boot 2026.07 上，在 Docker 里（本机已有的 `ghcr.io/openwrt/buildbot/buildworker` 镜像加 `gcc-aarch64-linux-gnu`）对 MD、MF 两个 defconfig 各编一遍 `net/httpd.o` 与完整 `u-boot.bin`。0.1.x 只做语法级检查，漏过一次把 `flash_part()` 圈进 `#if` 的编译错误，这一层就是为它加的
 
    没有 Docker 的机器上还有一层兜底：`net/httpd.c` 从 `202` 里抽成真正的 `.c` 文件来改（`+` 行进出，行数由脚本重算，round-trip 逐字节比对过），再跑一个不需要编译器的静态检查 —— 去掉注释与字符串后的括号配对、`printf` 族的格式符与实参个数、有没有定义了没用到的 static 函数。先在改动前的版本上跑一遍当对照组。**这不能替代第 2 层**，它查不出 U-Boot API 的签名对不对
