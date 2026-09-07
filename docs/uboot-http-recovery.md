@@ -44,7 +44,7 @@
 | --- | --- | --- |
 | 日常刷机 | `firmware` | `ubi_write_production`：删 `fit` 与 `rootfs_data`，按文件长度重建 `fit` 写入 |
 | 引导升级 | `bl2` `fip` `firmware`（可选） `format` | BL2 走 `mtd`；FIP 在位写 `fip` 卷；勾了「重建 UBI」先整个擦掉 `ubi` 分区 |
-| 刷回原厂 | `stock` `stockoff` | 裸设备逐块 `mtd_erase()` + `mtd_write()`，**位置保持**；偏移由 `stockoff` 给（须按擦除块对齐），默认 `0x0` 整片 |
+| 刷回原厂 | — | 单独的 `POST /stock?off=`，**body 就是镜像本身**（不是 multipart）。边收边写，逐块 `mtd_erase()` + `mtd_write()`，**位置保持**；偏移须按擦除块对齐，默认 `0x0` 整片。**没有大小上限** |
 | 创建 UBI 卷 | `fvol_<name>`… `ubivol` `ubifile` `stay` | 出厂数据卷按 `HTTPD_FACTORY_VOLS` 校验长度后 `ubi write`；任意卷 `ubi check \|\| ubi create` 再写；`stay` 写完不重启 |
 | 备份下载 | — | `GET /dump?vol=<名>` 走 `ubi read`，`GET /dump?off=&len=` 直接调 `mtd_read()`，**位置保持**（文件偏移 == flash 偏移，与 `dd` 同格式）。流式，只在内存里拿一个窗口；`len` 留空表示读到片尾；`GET /dumpinfo` 回最近一次的 crc32 与读不出的块数，见[下下节](#030-续心跳备份环境重启) |
 | 设备详情 | — | `GET /info` 返回 JSON：设备树 `model` / `compatible`、DRAM、MTD 几何与分区、MAC、U-Boot 版本、UBI 卷表（含有没有 `fip` 卷）。卷表按卷名排序，ID 列是 UBI 卷号（按创建先后分配，不同迁移路径得到的号不同）；卷没有固定物理地址，所以不列 |
@@ -58,7 +58,9 @@
 
 页面本身**不含任何机型串** —— 机型、闪存、卷表都是请求时读出来的，所以两款机器共用同一份 HTML，第三块板也是。
 
-`/info` 里的 `uploadmax` 是 `httpd_parse()` 拿来卡 `Content-Length` 的那个上限（`upload_max()`，512 MiB 板子约 248.8 MiB）。报出来是为了让页面在**文件还在磁盘上的时候**就说不，而不是传了两百多兆之后才被 400。原厂 `all_flash.bin` 是 235.6 MiB，本来就在上限之内；会碰到它的只有「传一个完整 256 MiB 镜像」，而那个你不会想写回去。
+`/info` 里的 `uploadmax` 是 `httpd_parse()` 拿来卡 `Content-Length` 的那个上限（`upload_max()`，512 MiB 板子约 248.8 MiB）。报出来是为了让页面在**文件还在磁盘上的时候**就说不，而不是传了两百多兆之后才被 400。
+
+它只管**要先整个进内存才写**的那几页（引导升级、日常刷机、创建 UBI 卷），那些文件本来就只有几兆到十几兆。「刷回原厂」不受它管 —— 见下面的 `POST /stock`。
 
 上传结束设备回一行 `{"ok":1}`，页面自己切到「上传完成」；勾了「写入后不重启」就留在原页、把表单清空。能在上传前查出来的错误 —— 出厂卷长度不对、偏移没按擦除块对齐或超出容量、卷名非法 —— 设备直接回 400，原因显示在进度条下面，此时什么都还没写。
 
@@ -142,6 +144,33 @@
 内一个字节都没出去，下一个请求就把缓冲区接管过去。误伤一个只是暂停了的
 下载也不会让谁拿到坏备份：crc32 只在向前那一遍累加，接管之后序号根本
 不会跳，`/dumpinfo` 就是不报。
+
+### 刷回原厂是流式的：`POST /stock`
+
+整片镜像放不进内存。`$loadaddr` 到 U-Boot 重定位后的落脚点之间，512 MiB
+的板子只有约 249 MiB，而 256 MiB 芯片的裸镜像正好 256 MiB。**分段是我们
+的问题，不是用户的问题** —— 所以这条路不再把镜像留在内存里：字节一边到
+一边往闪存写，上传多大就不再是个问题。
+
+它**故意不是 multipart**。页面上别的表单都带好几个字段、也都小到可以整个
+暂存，那套代码一行没动。流式解 multipart 意味着增量扫 boundary、还要推断
+负载在哪里结束 —— 而结尾定界符判断错两个字节，最后一个擦除块里就是两个
+字节的脏数据。裸 body 没有这个问题：**偏移在请求行里、长度在 Content-Length 里，第一个包到手就全知道了**。
+
+环形缓冲只需要吸收乱序。栈自己会把 `[rcv_nxt, rcv_nxt + rcv_wnd)` 之外的
+段丢掉（`net/tcp.c`），而 `rcv_wnd` 是 `PKTBUFSRX * TCP_MSS`，只有几十 KiB
+—— 四个擦除块就够，代码里取到 4 MiB 封顶。`rx()` 返回值就是"从这一段开头
+算起收下了多少字节"，放不下就返回 0，对方自然会重传：
+
+```c
+tmp_len = tcp->rx(tcp, buf_offs, buf, len);
+if (tmp_len < 0) { RST; destroy; }
+if (tmp_len) tcp_hole(tcp, tcp_seq_num, tmp_len);
+```
+
+**代价是：传失败不再意味着闪存没动过。** 这是流式的定义，辩不掉，所以改成
+让失败可以活下来：出错**不重启**，页面还在内存里跑着，而且明说闪存已经写了
+一半、必须重传成功才能重启。响应体带 crc32 与跳过的坏块数。
 
 ### 位置保持：文件偏移就是 flash 偏移
 
@@ -661,7 +690,7 @@ httpd: refusing 0 byte upload
 
 每次改动都跑三层，真机编译一次约 1.5 小时，所以前两层要在本地过：
 
-1. **页面** —— `files/httpd/test/` 里的 jsdom 用例，125 个，`cd files/httpd/test && npm install && npm test`（用例自己会先跑 `preview.py` 渲染，不会拿到过期的 HTML）。改动落在 httpd 目录时 CI 跟着跑，见 `.github/workflows/httpd-page-test.yml`。覆盖：`/info` 填表与失败降级、每一页的确认框内容与拦截条件、实际提交的 `FormData` 字段集、多文件上传进度按累计长度定位、200 / 400 / 断网三种结局、「不重启」留页并靠心跳回报、备份下载的 URL 与越界拦截、环境变量的过滤与恢复默认、体检分组、心跳的两次失败判定与三种覆盖层、长时间静默只变点不弹框、整片下载是一个文件、传完报出 crc32 且多份往下排不覆盖、作者链接。跑的是真实的页面源文件，不是复制品
+1. **页面** —— `files/httpd/test/` 里的 jsdom 用例，127 个，`cd files/httpd/test && npm install && npm test`（用例自己会先跑 `preview.py` 渲染，不会拿到过期的 HTML）。改动落在 httpd 目录时 CI 跟着跑，见 `.github/workflows/httpd-page-test.yml`。覆盖：`/info` 填表与失败降级、每一页的确认框内容与拦截条件、实际提交的 `FormData` 字段集、多文件上传进度按累计长度定位、200 / 400 / 断网三种结局、「不重启」留页并靠心跳回报、备份下载的 URL 与越界拦截、环境变量的过滤与恢复默认、体检分组、心跳的两次失败判定与三种覆盖层、长时间静默只变点不弹框、整片下载是一个文件、传完报出 crc32 且多份往下排不覆盖、作者链接。跑的是真实的页面源文件，不是复制品
 2. **编译** —— 整个补丁序列打到纯净的 U-Boot 2026.07 上，在 Docker 里（本机已有的 `ghcr.io/openwrt/buildbot/buildworker` 镜像加 `gcc-aarch64-linux-gnu`）对 MD、MF 两个 defconfig 各编一遍 `net/httpd.o` 与完整 `u-boot.bin`。0.1.x 只做语法级检查，漏过一次把 `flash_part()` 圈进 `#if` 的编译错误，这一层就是为它加的
 
    没有 Docker 的机器上还有一层兜底：`net/httpd.c` 从 `202` 里抽成真正的 `.c` 文件来改（`+` 行进出，行数由脚本重算，round-trip 逐字节比对过），再跑一个不需要编译器的静态检查 —— 去掉注释与字符串后的括号配对、`printf` 族的格式符与实参个数、有没有定义了没用到的 static 函数。先在改动前的版本上跑一遍当对照组。**这不能替代第 2 层**，它查不出 U-Boot API 的签名对不对
