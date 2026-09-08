@@ -14,17 +14,18 @@
 
 ### 进恢复页
 
-三条路，前两条不需要串口：
+四条路，只有最后一条需要串口：
 
 | 什么时候 | 怎么进 |
 | --- | --- |
 | 想主动刷机 | **按住 reset 上电**，一直按着，等面板五个绿灯开始**流水**再松手（约 15 秒） |
 | 机器起不来了 | **什么都不用做** —— 从 NAND 引导失败后会自己循环起网页，插上网线即可 |
+| 闪存还是原厂布局 | **什么都不用做** —— `_firstboot` 里 `ubi part ubi` 挂不上就走 `_no_ubi`，不动闪存直接起网页 |
 | 手上接着串口 | 引导菜单上用 ↑/↓ **选到第 9 项** 回车 —— `bootmenu_8` 直接 `httpd`，不经 `_firstboot`，不用掐 reset 的时机 |
 
 这段时间里有一部分是 bootmenu 的等待。`button reset` 读的是那一瞬间的电平，不是累计计时，所以「一直按住」比「按几下」可靠。**流水灯亮起来就是进去了。**
 
-第三条走的是另一条代码路径：`check_buttons` 在 `_firstboot` 里，而第 9 项是 bootmenu 自己的条目，两者互不依赖 —— 所以它在**首次迁移**那种 flash 布局还不对的场景下照样能用，见下面第 ② 步。
+第三条是**首次迁移**唯一不用掐时机的路，见下面第 ② 步。第四条走的是另一条代码路径：`check_buttons` 与 `_no_ubi` 都在 `_firstboot` 里，而第 9 项是 bootmenu 自己的条目，互不依赖。
 
 ### 传文件
 
@@ -279,6 +280,10 @@ crc32。页面读不到隐藏 frame 的**响应头**，所以它先问一次记�
 
 外加「U-Boot MAC」现在会和出厂卷里读到的 MAC 对一遍，不同就提示「重建 UBI 后常见，将备份的出厂卷写回即可」。
 
+**「可写空间」算的是刷机可用量，不是 `avail_pebs`。** 只报 `avail_pebs` 的话，一台正常跑着的机器永远是 0 MiB 并顶着黄条：OpenWrt 首次启动会把 `rootfs_data` 铺满 `fit` 没占的每一块。而写固件的两条路（板子自己的 `ubi_write_production` 和内置的 `DEF_WRITE_FIT`）都是**先删 `fit` 与 `rootfs_data`、再建新 `fit`**，所以这两个卷是可用量而不是占用量。现在把它们的 `reserved_pebs` 计进去，并把「其中现在空闲多少、多少是写入时腾出来的」一并写在那一行上，好和上面的卷表对得起来。引导器不在这个名单里：写 `fip` 是在卷自己的预留里原地写，不需要腾任何东西。
+
+**「引导菜单预览」的序号是串口上的按键，不是变量名里的 `n`。** U-Boot 的 bootmenu 只有一位快捷键（`1`~`9`，然后 `a`~`z`，`0` 留给 Exit），所以 `bootmenu_0` 在屏幕上是 `1.`、`bootmenu_9` 是 `a.`。照变量名从 0 标起会跟用户眼前的菜单差一位。
+
 两处实现上的坑：
 
 * **`env_get_default()` 不能用来比 `bootcmd`。** 它在环境未就绪的路径上答复，而那条路走的是一个 **32 字节的静态缓冲区** —— `bootcmd` 和菜单条目回来时是截断的，拿它比「改没改过」永远是「改过」。改成直接扫 `default_environment[]`（`name=value` 平铺、空串结尾）。
@@ -290,13 +295,19 @@ crc32。页面读不到隐藏 frame 的**响应头**，所以它先问一次记�
 
 | 面板 | 含义 | 能拔网线吗 |
 | --- | --- | --- |
-| 五灯**流水** | 在等你上传 | ❌ 还在传 |
-| 五灯**齐闪** | 正在写 flash | ✅ 随便拔 |
+| 五灯**流水** | 网线还在用：在等你上传，或「刷回原厂」正在边收边写 | ❌ |
+| 五灯**齐闪** | 正在写 flash，上传已结束 | ✅ 随便拔 |
 | 熄灭后重启 | 写完了 | ✅ |
+
+灯语回答的就是一个问题：**网线现在能不能拔**。流水＝还在用，齐闪＝用完了。断电则是任何时候都别做，这一条不靠灯区分，页面上每一处写入前都写着。
 
 **上传结束后网页就没用了。** `net_loop()` 在写入开始前就返回，连接已经关闭，浏览器和设备之间没有通道 —— 页面上那句「写入期间页面收不到任何消息」说的就是这件事。
 
-拔网线随时安全，写 flash 不经过网络。**要命的是断电** —— 齐闪期间断电才是真的砖。
+**「刷回原厂」是例外，它边收边写**，所以写的时候连接还开着、`net_loop()` 还在跑。于是它**全程保持流水**、根本不切齐闪：流水的含义本来就是「网线还在用」，而这一页从头到尾都在用。原先它在写第一块时去起了齐闪，可流水由 `net_loop()` 的超时回调驱动、并没有停，两套图形同时点同一排灯，看上去既在流水又在闪 —— 这是报上来的那个现象。现在流式那条路一次都不调 `httpd_blink_start()`，写完时用 `httpd_led_stop()` 熄灯，和别的路一样以「灭掉再重启」收尾。`httpd_blink_start()` 里仍然留了一句 `httpd_led_stop()`：今天没有调用方需要它，但这一类叠加正是刚踩过的坑，让「起齐闪」自带「停流水」比指望调用方记得便宜。
+
+「进度到哪儿了」这个问题由页面回答 —— 流式那页有自己的进度条，不需要灯来兼职。
+
+**齐闪**期间拔网线随时安全，写 flash 不经过网络；要命的是断电。
 
 「写入后不重启」的场合灯会从齐闪回到流水 —— 那就是写完了，可以刷新页面传下一个。写卷期间设备不响应网络，这时再传只会报连接中断。
 
@@ -325,20 +336,30 @@ immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot.fip     ← BL2 收，
 
 传两个是硬约束：BootROM 只把 BL2 收进 SRAM，那里放不下 431 KB，它也不解析 FIP 里的 BL33。
 
-**reset 一直按着不要松** —— 或者想好了走下一步那张表里「菜单上选第 9 项」那一行。
+reset 按不按都行 —— 下一步不需要掐时机。
 
 **② U-Boot 在 RAM 里起来，直接进网页**
 
-两种走法，任选一种：
+`_firstboot` 在碰 flash 之前连着两道闸，任意一道拦下都落到网页：
+
+```
+_firstboot=setenv _firstboot ; run check_buttons ; ubi part ubi || run _no_ubi ; run ethaddr_factory ; ...
+_no_ubi=echo ; echo This flash carries no usable UBI. Leaving it alone. ; echo ... ; setenv bootmenu_0 "Start web recovery server at http://$ipaddr=run boot_httpd_forever" ; bootmenu 3 ; run boot_httpd_forever
+```
+
+`_no_ubi` 里那句 `setenv bootmenu_0` 是这段能成立的关键：`bootmenu_default=0`，而未初始化环境里的 `bootmenu_0` 是「Initialize environment.=run _firstboot」—— 菜单一超时就会绕回 `_firstboot`，再挂不上 UBI、再进菜单，转圈。把第 1 项当场换成「起网页」，超时执行的就是我们要的那条，且它 `while true` 不返回。改的是内存里的副本，没有 `saveenv`，下次开机不留痕。结尾那句 `run boot_httpd_forever` 是兜底：用户在菜单上选了 Exit 或选了一条会返回的条目时，仍然落到网页，而不是继续往下走进 `ubi_format`。
 
 | 走法 | 做什么 | 代价 |
 | --- | --- | --- |
-| **reset 一直按着** | 让 bootmenu 自己超时进 `_firstboot`，`check_buttons` 接住 | 没有时间窗口，最稳 |
-| **菜单上选第 9 项** | `bootmenu_8` 直接 `httpd`，根本不进 `_firstboot` | 只有 `bootdelay=3` 那 3 秒 |
+| **什么都不做** | `ubi part ubi` 在原厂布局上挂不上 → `_no_ubi` 把菜单停 3 秒，超时自动进 `boot_httpd_forever` | 不用抢，超时就是你要的 |
+| **reset 一直按着** | `run check_buttons` 接住，同样进 `httpd` | 没有时间窗口 |
+| **在那 3 秒里按任意键** | 停在菜单上，可以改走 TFTP 或进命令行 | 只给串口用户 |
 
-`_firstboot` 的第一件事就是 `run check_buttons` —— 在碰 flash 之前先看按键。这一刀是「一轮 xmodem 就够」的全部依据：没有它，RAM 里的 U-Boot 会直奔 `_init_env`，在异构 flash 布局上建卷失败、回落 `ubi_format` 然后 `reset`，把刚传进来的东西一起丢掉。
+第一道是按键。第二道是 flash 自己，也是首次迁移真正靠得住的那道：没有它，RAM 里的 U-Boot 会直奔 `_init_env`，在异构 flash 布局上建卷失败、回落 `ubi_format`（`ubi detach ; mtd erase ubi && ubi part ubi ; reset`），于是**两件事同时发生** —— 刚传进来的 U-Boot 随 `reset` 一起没了，而 `ubi` 分区已经被擦干净：`bl2` 分区里的原厂 BL2 还在，可它要加载的 FIP 没了，下一次上电停在 `ERROR: Failed to decompress image` 然后 PANIC。只能再走一轮 xmodem。
 
-> 第 9 项绕开了这整条路径，所以它不需要 `check_buttons` 保护。但**两者必须命中一个** —— 既松了 reset、又没在 3 秒内选中第 9 项回车，菜单超时进 `_firstboot`，`check_buttons` 不成立，上面那条 `ubi_format` + `reset` 的路就走实了，这一轮 xmodem 白传，回 ① 重来。不伤 flash，只伤时间。
+> 早先只有 `check_buttons` 这一道，文档也写着「松了 reset 就在 3 秒里选第 9 项」—— 那条路在**首次迁移这一轮根本不存在**：没初始化过的机器默认环境里 `bootdelay=0`、`bootmenu_delay=0`，菜单不停顿，而把它们抬到 3 的 `_switch_to_menu` 在 `_firstboot` 里边，来不及。第 9 项要等迁移完成、环境存下来之后才用得上。
+>
+> 擦 flash 从此只发生在用户在网页上勾了「重建 UBI」的时候 —— 那时该写回去的镜像已经在这次上传里了。启动流程不再替他做这个决定。
 
 看到流水灯就成了（按着 reset 的这时松手）。
 
@@ -713,7 +734,7 @@ httpd: refusing 0 byte upload
 
 每次改动都跑三层，真机编译一次约 1.5 小时，所以前两层要在本地过：
 
-1. **页面** —— `files/httpd/test/` 里的 jsdom 用例，312 个，`cd files/httpd/test && npm install && npm test`（用例自己会先跑 `preview.py` 渲染，不会拿到过期的 HTML）。改动落在 httpd 目录时 CI 跟着跑，见 `.github/workflows/uboot-check.yml`（同一个 workflow 还会真把两块板的 U-Boot 交叉编出来）。覆盖：`/info` 填表与失败降级、每一页的确认框内容与拦截条件、实际提交的 `FormData` 字段集、多文件上传进度按累计长度定位、200 / 400 / 断网三种结局、「不重启」留页并靠心跳回报、备份下载的 URL 与越界拦截、环境变量的过滤与恢复默认、体检分组、心跳的两次失败判定与三种覆盖层、长时间静默只变点不弹框、整片下载是一个文件、传完报出 crc32 且多份往下排不覆盖、作者链接。跑的是真实的页面源文件，不是复制品
+1. **页面** —— `files/httpd/test/` 里的 jsdom 用例，416 个，`cd files/httpd/test && npm install && npm test`（用例自己会先跑 `preview.py` 渲染，不会拿到过期的 HTML）。改动落在 httpd 目录时 CI 跟着跑，见 `.github/workflows/uboot-check.yml`（同一个 workflow 还会真把两块板的 U-Boot 交叉编出来）。覆盖：`/info` 填表与失败降级、每一页的确认框内容与拦截条件、实际提交的 `FormData` 字段集、多文件上传进度按累计长度定位、200 / 400 / 断网三种结局、「不重启」留页并靠心跳回报、备份下载的 URL 与越界拦截、环境变量的过滤与恢复默认、体检分组、心跳的两次失败判定与三种覆盖层、长时间静默只变点不弹框、整片下载是一个文件、传完报出 crc32 且多份往下排不覆盖、作者链接。跑的是真实的页面源文件，不是复制品
 2. **编译** —— 整个补丁序列打到纯净的 U-Boot 2026.07 上，在 Docker 里（本机已有的 `ghcr.io/openwrt/buildbot/buildworker` 镜像加 `gcc-aarch64-linux-gnu`）对 MD、MF 两个 defconfig 各编一遍 `net/httpd.o` 与完整 `u-boot.bin`。0.1.x 只做语法级检查，漏过一次把 `flash_part()` 圈进 `#if` 的编译错误，这一层就是为它加的
 
    没有 Docker 的机器上还有一层兜底：`net/httpd.c` 从 `202` 里抽成真正的 `.c` 文件来改（`+` 行进出，行数由脚本重算，round-trip 逐字节比对过），再跑一个不需要编译器的静态检查 —— 去掉注释与字符串后的括号配对、`printf` 族的格式符与实参个数、有没有定义了没用到的 static 函数。先在改动前的版本上跑一遍当对照组。**这不能替代第 2 层**，它查不出 U-Boot API 的签名对不对
