@@ -1,4 +1,4 @@
-name: ImmortalWrt-Airoha
+name: ImmortalWrt-Airoha-Custom
 
 # 让 Actions 列表直接显示本次选了什么，省得点进去翻日志里的 env 块。
 # 必须写成一行：折叠标量会把缩进更深的续行当字面量，在 ${{ }} 中间插进换行。
