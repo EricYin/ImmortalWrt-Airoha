@@ -48,7 +48,7 @@
 | 刷回原厂 | — | 单独的 `POST /stock?off=`，**body 就是镜像本身**（不是 multipart）。边收边写，逐块 `mtd_erase()` + `mtd_write()`，**位置保持**；偏移须按擦除块对齐，默认 `0x0` 整片。**没有大小上限** |
 | 写入 UBI 卷 | `fvol_<name>`… `ubivol` `ubifile` `stay` | 出厂数据卷按 `HTTPD_FACTORY_VOLS` 校验长度后 `ubi write`；任意卷 `ubi check \|\| ubi create` 再写；`stay` 写完不重启 |
 | 备份下载 | — | `GET /dump?vol=<名>` 走 `ubi read`，`GET /dump?off=&len=` 直接调 `mtd_read()`，**位置保持**（文件偏移 == flash 偏移，与 `dd` 同格式）。流式，只在内存里拿一个窗口；`len` 留空表示读到片尾；`GET /dumpinfo` 回最近一次的 crc32 与读不出的块数，见[下下节](#030-续心跳备份环境重启) |
-| 设备详情 | — | 三段。网络那段另有 `GET /netset?ip=&mask=&save=`（静态地址）、`GET /netdhcp`（向上级路由要）与 `GET /netdhcpd?on=`（DHCP 服务开关）；前两者延后到答复发出之后才动手，并顺带关掉 DHCP 服务。`GET /info` 返回 JSON：设备树 `model` / `compatible`、DRAM、MTD 几何与分区、MAC、U-Boot 版本、UBI 卷表（含有没有 `fip` 卷）。卷表按卷名排序，ID 列是 UBI 卷号（按创建先后分配，不同迁移路径得到的号不同）；卷没有固定物理地址，所以不列 |
+| 设备详情 | — | 三段。网络那段另有 `GET /netset?ip=&mask=&save=`（静态地址）、`GET /netdhcp`（向上级路由要）与 `GET /netdhcpd?on=`（DHCP 服务开关）；前两者延后到答复发出之后才动手，并顺带关掉 DHCP 服务。`GET /info` 返回 JSON：设备树 `model` / `compatible`、DRAM、MTD 几何与分区、MAC、U-Boot 版本、UBI 卷表（含有没有 `fip` 卷）。卷表按卷名排序，ID 列是 UBI 卷号（按创建先后分配，不同迁移路径得到的号不同）；卷没有固定物理地址，所以不列。表上方一条占用条按预留容量分段，`fit` 与 `rootfs_data` 打斜纹 —— 它们是刷写时先删后建的，容量算在「可写空间」里。`ubi` 对象为此多一个 `avail`（`ubi->avail_pebs`）：光靠 `pebs` 减各卷大小，分不出「还没分出去的」与「UBI 留给自己的」（卷表 2 块加坏块替换预留），条上那两段就并成一段 |
 | 诊断 | — | 三段。「快速检查」`GET /check`，16 项分五组，见[下一节](#030拦截横幅体检日志)与[下下节](#030-续心跳备份环境重启)；「全片扫描」`GET /scan?off=`，一次 4 MiB，页面累加；「串口日志」`GET /log`，`?from=` 只回新字节、正文第一行是新偏移 |
 | 环境变量 | — | `GET /env` 只读列出全部 env；`GET /envreset` 跑 `env default -a && saveenv` |
 | 启动与重启 | — | `GET /reboot` 答复发出并被确认之后才 `reset`；`GET /boot` 执行 `bootcmd`；`GET /bootonce` 让下次开机停在本页 |
