@@ -344,10 +344,12 @@ reset 按不按都行 —— 下一步不需要掐时机。
 
 ```
 _firstboot=setenv _firstboot ; run check_buttons ; ubi part ubi || run _no_ubi ; run ethaddr_factory ; ...
-_no_ubi=echo ; echo This flash carries no usable UBI. Leaving it alone. ; echo ... ; setenv bootmenu_0 "Start web recovery server at http://$ipaddr=run boot_httpd_forever" ; bootmenu 3 ; run boot_httpd_forever
+_no_ubi=echo ; echo "This flash carries no usable UBI. Leaving it alone." ; echo "..." ; setenv bootmenu_0 "Continue to web recovery at http://$ipaddr=run boot_httpd_forever" ; bootmenu 3 ; run boot_httpd_forever
 ```
 
-`_no_ubi` 里那句 `setenv bootmenu_0` 是这段能成立的关键：`bootmenu_default=0`，而未初始化环境里的 `bootmenu_0` 是「Initialize environment.=run _firstboot」—— 菜单一超时就会绕回 `_firstboot`，再挂不上 UBI、再进菜单，转圈。把第 1 项当场换成「起网页」，超时执行的就是我们要的那条，且它 `while true` 不返回。改的是内存里的副本，没有 `saveenv`，下次开机不留痕。结尾那句 `run boot_httpd_forever` 是兜底：用户在菜单上选了 Exit 或选了一条会返回的条目时，仍然落到网页，而不是继续往下走进 `ubi_format`。
+**两句 echo 的引号是必须的，不是排版。** 这两块板的 defconfig 都是 `CONFIG_SYS_MAXARGS=8`，而 `echo` 是按 `CONFIG_SYS_MAXARGS` 注册 `maxargs` 的：`cmd_process()` 见 `argc > maxargs` 就直接回 `CMD_RET_USAGE`，于是串口上打出的是 `echo` 的用法说明而不是那句话。不加引号时这两条分别是 10 个和 15 个参数，两条都中招 —— 首刷实测就是两坨 usage。加引号后整句是一个 argv，`argc=2`，与句子长短无关。
+
+`_no_ubi` 里那句 `setenv bootmenu_0` 是这段能成立的关键（标题写成「Continue to web recovery」而不是照抄第 9 项，否则菜单上会并排出现两条同名条目）：`bootmenu_default=0`，而未初始化环境里的 `bootmenu_0` 是「Initialize environment.=run _firstboot」—— 菜单一超时就会绕回 `_firstboot`，再挂不上 UBI、再进菜单，转圈。把第 1 项当场换成「起网页」，超时执行的就是我们要的那条，且它 `while true` 不返回。改的是内存里的副本，没有 `saveenv`，下次开机不留痕。结尾那句 `run boot_httpd_forever` 是兜底：用户在菜单上选了 Exit 或选了一条会返回的条目时，仍然落到网页，而不是继续往下走进 `ubi_format`。
 
 | 走法 | 做什么 | 代价 |
 | --- | --- | --- |
