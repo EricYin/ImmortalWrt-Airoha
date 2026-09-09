@@ -10,7 +10,7 @@ on:
       repo_branch:
         description: '源码分支（EricYin/immortalwrt）。留空即 master-airoha；填别的分支只作测试，会标成 pre-release、不更新选包索引'
         required: false
-        default: 'master-airoha'
+        default: 'Loong1996-master-airoha'
         type: string
       device:
         description: '机型'
