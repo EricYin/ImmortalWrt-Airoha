@@ -49,7 +49,7 @@
 | 写入 UBI 卷 | `fvol_<name>`… `ubivol` `ubifile` | 出厂数据卷按 `HTTPD_FACTORY_VOLS` 校验长度后 `ubi write`；任意卷 `ubi check \|\| ubi create` 再写。`stay` 字段 0.3.0 起没有了：写完一律不重启，重不重启在页面上点 |
 | 备份下载 | — | `GET /dump?vol=<名>` 走 `ubi read`，`GET /dump?off=&len=` 直接调 `mtd_read()`，**位置保持**（文件偏移 == flash 偏移，与 `dd` 同格式）。流式，只在内存里拿一个窗口；`len` 留空表示读到片尾；`GET /dumpinfo` 回最近一次的 crc32 与读不出的块数，见[下下节](#030-续心跳备份环境重启) |
 | 写入进度 | — | `GET /wr?from=` 回写到哪了，形状同 `/log?from=`：首行是新偏移，其后是新增的行。写一个卷的那几秒设备不应答，页面轮询、漏了就漏了，每行自带绝对值 |
-| 设备详情 | — | 三段。网络那段另有 `GET /netset?ip=&mask=&save=`（静态地址）、`GET /netdhcp`（向上级路由要）与 `GET /netdhcpd?on=`（DHCP 服务开关）；前两者延后到答复发出之后才动手，并顺带关掉 DHCP 服务。`GET /info` 返回 JSON：设备树 `model` / `compatible`、DRAM、MTD 几何与分区、MAC、U-Boot 版本、UBI 卷表（含有没有 `fip` 卷）。卷表按卷名排序，ID 列是 UBI 卷号（按创建先后分配，不同迁移路径得到的号不同）；卷没有固定物理地址，所以不列。表上方一条占用条按预留容量分段，`fit` 与 `rootfs_data` 打斜纹 —— 它们是刷写时先删后建的，容量算在「可写空间」里。`ubi` 对象为此多一个 `avail`（`ubi->avail_pebs`）：光靠 `pebs` 减各卷大小，分不出「还没分出去的」与「UBI 留给自己的」（卷表 2 块加坏块替换预留），条上那两段就并成一段 |
+| 设备详情 | — | 三段。网络那段另有 `GET /netmode?mode=server|static|client&ip=&mask=&save=`：三种模式互斥，一个请求说完，答复是 `ok <模式> <地址> <掩码> <saved|ram>`（客户端档地址与掩码位为 `-`）。延后到答复发出之后才动手 —— 答复必须从旧地址发出去。网络那段露在前台时每 3 秒问一次 `GET /net`，回的就是 `/info` 里 `net` 与 `ports` 那两个对象 —— 换个网口端口表跟着变，不必为此重挂一次 UBI；见[网络那段会自己刷新](#网络那段会自己刷新dhcp-开关会自己存)。`GET /info` 返回 JSON：设备树 `model` / `compatible`、DRAM、MTD 几何与分区、MAC、U-Boot 版本、UBI 卷表（含有没有 `fip` 卷）。卷表按卷名排序，ID 列是 UBI 卷号（按创建先后分配，不同迁移路径得到的号不同）；卷没有固定物理地址，所以不列。表上方一条占用条按预留容量分段，`fit` 与 `rootfs_data` 打斜纹 —— 它们是刷写时先删后建的，容量算在「可写空间」里。`ubi` 对象为此多一个 `avail`（`ubi->avail_pebs`）：光靠 `pebs` 减各卷大小，分不出「还没分出去的」与「UBI 留给自己的」（卷表 2 块加坏块替换预留），条上那两段就并成一段 |
 | 诊断 | — | 三段。「快速检查」`GET /check`，16 项分五组，见[下一节](#030拦截横幅体检日志)与[下下节](#030-续心跳备份环境重启)；「全片扫描」`GET /scan?off=`，一次 4 MiB，页面累加；「串口日志」`GET /log`，`?from=` 只回新字节、正文第一行是新偏移 |
 | 环境变量 | — | `GET /env` 只读列出全部 env；`GET /envreset` 跑 `env default -a && saveenv` |
 | 启动与重启 | — | `GET /reboot` 答复发出并被确认之后才 `reset`；`GET /boot` 执行 `bootcmd`；`GET /bootonce` 让下次开机停在本页 |
@@ -77,7 +77,7 @@
 
 **启动日志（`GET /log`）。** 打开 U-Boot 自带的 `CONFIG_CONSOLE_RECORD`（64 KiB），把 `gd->console_out` 原样吐出来，页面去掉 ANSI 转义后显示，可复制。`203` 补上一处上游的遗漏：重定位后 `console_record_init()` 重新分配缓冲，重定位前录的横幅、CPU、DRAM 三行会丢，现在先搬过来。缓冲满了不覆盖、只丢新的，末尾标一句「日志缓冲已满」—— 64 KiB 对一次救砖绰绰有余。侧栏单独一页，进入时自动读。`/info` 多一个 `log` 字段，没开录制的固件不显示这一页。重定位前那段录在早期 malloc 区的小缓冲里，显式设为 2 KiB（`CONSOLE_RECORD_OUT_SIZE_F`，上游默认 1 KiB；实机重定位前只打横幅、CPU、DRAM 约 120 字节），搬完后清掉它留下的溢出标志，免得 64 KiB 的缓冲被误报为满。
 
-菜单标题与 `show_about` 跟着升到 0.3.0，`envver` 4 → 5。
+菜单标题与 `show_about` 跟着升到 0.3.0。环境变量这一版全部改名到 `web_uboot_` 前缀，版本号自己也从 `envver` 变成 `web_uboot_envver`（值 5 → 6）—— 名字换掉本身就是迁移信号：老环境里只有 `envver`，新代码读不到 `web_uboot_envver` 就判定落后，当场刷新并写进新名字。旧的那几个留着不删，无害。
 
 **先看再写。** `files/httpd/preview.py page.html` 生成一个能直接在浏览器里打开的预览：所有请求由页内的桩应答，右下角切换设备状态（正常 / 没有 UBI / 没有 `fip` 卷 / 不带日志 / `/info` 失败）与提交结局（成功 / 400 / 断线）。改页面先在这里对齐布局与措辞，再进 C。桩给的数据就是真实端点给的数据，所以对齐的是同一份东西。
 
@@ -261,7 +261,7 @@ crc32。页面读不到隐藏 frame 的**响应头**，所以它先问一次记�
 —— 那就是信号。`dlrefused()` 拿这个事件把 frame 里的文字读出来贴到状态
 行上，顺手停掉轮询。四行代码，把所有拒绝从「静默四分钟」变成当场看见。
 
-**环境变量（`GET /env`）。** 只读，按名字排序，页面上带过滤框和「只看关键项」开关（`bootcmd` / `bootdelay` / `bootmenu_*` / `envver` / `ethaddr*` / `boot_*` / `httpd_*` / `ubi_*` / `check_buttons` 与网络那几个）。**不做编辑** —— 一个救砖页面把 `bootcmd` 改坏是很差的交易；唯一提供的写入是下面那个整体恢复，它不可能让环境落到这一版没见过的状态。
+**环境变量（`GET /env`）。** 只读，按名字排序，页面上带过滤框和「只看关键项」开关（`bootcmd` / `bootdelay` / `bootmenu_*` / `web_uboot_*` / `ethaddr*` / `boot_*` / `ubi_*` / `check_buttons` 与网络那几个；改名前的 `envver` 与 `httpd_*` 也留在过滤器里，好让升级上来的机器看得见自己那几条遗留）。**不做编辑** —— 一个救砖页面把 `bootcmd` 改坏是很差的交易；唯一提供的写入是下面那个整体恢复，它不可能让环境落到这一版没见过的状态。
 
 **恢复默认环境（`GET /envreset`）。** `env default -a && saveenv`，走确认框。`ethaddr` 是手工放回去的：`env default -a` 会连它一起清掉，出厂 MAC 在 `ri` 卷里、下次启动时脚本会重新导出，但**这一次启动**不会 —— 页面上写着「出厂 MAC 不受影响」，所以代码得让这句话是真的。UBI 挂不上时 `saveenv` 会失败，回 `ok` 而不是 `ok saved`，页面据此说「已恢复，但保存失败，断电即失」。
 
@@ -271,7 +271,7 @@ crc32。页面读不到隐藏 frame 的**响应头**，所以它先问一次记�
 
 | 组 | 新增项 | 查的是什么 |
 | --- | --- | --- |
-| 引导 | `envver` | 闪存里的值 vs **这一版编进去的默认值**，落后就说下次正常启动会自动刷新 |
+| 引导 | `web_uboot_envver` | 闪存里的值 vs **这一版编进去的默认值**，落后就说下次正常启动会自动刷新 |
 | 引导 | `bootcmd` | 同上逐字比对，不同就是被人改过，原文一并列出 |
 | 引导 | 引导菜单 | 条目数 vs 默认条目数 |
 | UBI | 磨损 | `ubi->max_ec` / `mean_ec`，超过 20000 次转黄 |
@@ -339,7 +339,7 @@ TFTP 传 12 MiB、DHCP 四次握手，全靠包到达时的 handler 加
 | 端点 | 挡它的理由 |
 | --- | --- |
 | `/envreset` | `env default -a` 把 `ipaddr` 打回默认，页面当场失联；还要 `saveenv` |
-| `/netset`、`/netdhcp`、`/netdhcpd` | 改地址，或写环境变量卷 |
+| `/netmode` | 改地址与模式，可能顺带写环境变量卷 |
 | `/bootonce` | `saveenv` 写环境变量卷 |
 | `/reboot`、`/boot` | 会结束 `net_loop()`，而写入正住在里面 |
 
@@ -366,10 +366,20 @@ done | f <说明>
 的 `ubi_write_fip` 把用户配置抹了」就是分叉的代价。所以写入段只有估计，回读
 校验段（这个文件自己的循环）才有真进度。
 
-**回读校验。** 写完按 `up_parts` 走一遍：UBI 卷用 `ubi_volume_read()`，BL2 用
+**回读校验。** 写完按 `up_parts` 走一遍：UBI 卷用 `vf_ubi_read()`，BL2 用
 `mtd_read()` 从 `BL2_IMAGE_OFF` 起读；每次进来读 1 MiB（内部 4 KiB 一段），
 `crc32` 滚着算，和内存里那份的 `crc32` 比。不一致就 `c bad`，**不弹框、不重
 启**，页面顶上挂红条。
+
+**`vf_ubi_read()` 是自己写的 LEB 循环，不走 `ubi_volume_read()`。** 那个封装每
+调一次就 `printf("Read 4096 bytes from volume fit to ...")`，回读一份固件要调七
+千多次：串口刷一分钟，`CONFIG_CONSOLE_RECORD` 那 64 KiB 缓冲被冲干净 —— 而
+「诊断」里的串口日志正是写入出问题时要看的东西。它还每次 `malloc` 一个回弹缓
+冲再 `free`，并把 `$filesize` 留成最后一段的长度。它底下本来就是
+`ubi_eba_read_leb()`，直接调就是同一次读，只是不吵。`check` 传 0：紧接着要拿整
+份 `crc32` 和上传的那份比，比 UBI 自己那个逐 LEB 校验说得更死，这本来就是回读
+的意义。`vf_buf` 同时按 64 字节对齐 —— 它现在是 `mtd_read()` 的直接落点，不再
+只是 `memcpy` 的目的地。
 
 **页面这一半。** POST 的 200 只表示「收下了」，之后 `wrpoll()` 每 700 ms 取一
 次；写一个卷的那几秒设备不应答，取不到就下次再取，每行自带绝对值所以漏了不
@@ -399,6 +409,78 @@ done | f <说明>
 **进度看页面，不看灯。** 灯只说「还在动」；写到哪一步、校验到百分之几，都在进度条上。
 
 拔网线随时安全，写 flash 不经过网络。**要命的是断电**，这一条不靠灯区分，页面上每一处写入前都写着。
+
+### 网络那段会自己刷新；地址与 DHCP 合成一个三选一
+
+**端口表原来是「打开页面那一刻」的快照。** `ports` 装在 `/info` 里，而页面在
+`nav()` 里只有 `!INFO` 时才去取一次 —— 网线换个口再回到这一页，看到的还是上一
+次的链路状态。改成每次进来都重取 `/info` 是不行的：`ubi_part()` 每调一次都先
+`ubi_exit()` 再重新 attach，2047 个擦除块整片扫一遍，几秒钟，串口还跟着刷一
+屏。「哪个口亮着」不值这个价钱。
+
+所以把会变的那一半单独开成 `GET /net`：`info_net()` 同时供 `/info` 和它使用，
+回 `net` 与 `ports` 两个对象，不碰设备树、不碰 MTD、不挂 UBI。页面在「设备详情
+→ 网络」这一段露在前台时每 3 秒问一次，切走就 `clearInterval`，`gone()`（设备
+已经搬到别的地址去了）也停。`netfill()` 优先用这一份，没有才退回 `/info` 里那
+一份；表单只在第一次照着设备填，之后归用户，轮询回来不许覆盖。
+
+**体检结果同样会过期。** `CHK` 也只在 `nav()` 里 `!CHK` 时跑一次，而体检读的是
+闪存 —— 刚把 `ri`、`bosa` 写进去，再进「诊断」却还摆着写之前那句「不存在」，看
+上去就像没写成。现在凡是动过闪存或环境的动作都把它作废：`wrfin()`（写完）、
+`stdone()`（刷回原厂）、`envdef()`（恢复默认环境）、`bootonce()`（改
+`bootcmd`，连 `ENV` 一起作废）。下次进「诊断」自然重跑，不必再去点「重新检
+查」。
+
+#### 两个维度并成一个
+
+原来是「静态地址 or 自动获取」再叠一个独立的 DHCP 服务开关。两个维度四种组合，
+三种含义，多出来的那一种（**向上级路由要地址的同时自己也在发地址**）是纯粹的
+错。代码只能在背后偷偷把开关关掉来避免它 —— 而「关掉」这个动作又存不进闪存，于
+是这个开关是只写 `0` 的：`httpd_dhcpd` 的两个写处里，`netchange_apply()`（改地
+址时顺手关）只写 0 且只有它跟着 `saveenv`，`/netdhcpd`（页面上那个开关）只
+`env_set()` 从不存盘。**保存过一次静态地址之后，闪存里就永远是 0，开关再怎么点
+都只管这一次开机。**
+
+现在是一个值三个取值，那种组合根本表达不出来：
+
+| 模式 | 含义 | 地址 | 掩码 |
+| --- | --- | --- | --- |
+| `server` | 本机发地址，电脑直连时插上就有 IP | 用户填，**末位强制为 1** | **固定 `255.255.255.0`** |
+| `static` | 本机用固定地址，不发地址 | 用户填 | 用户填 |
+| `client` | 向上级路由要地址，不发地址 | 由租约决定 | 由租约决定 |
+
+`server` 那两个「固定」不是限制，是把一直以来的隐含前提写下来：
+`dhcp_client_ip()` 发出去的一直是 `(net_ip & 0xffffff00) | 100`、网关指向本设
+备，所以任何别的掩码描述的都是一个租约并不属于的网络。页面在输入框还在打字的时
+候就把 `x.x.x.1` 与 `x.x.x.100` 两个结果摆出来，不留到按下按钮之后才纠正。
+
+#### 「不保存」是结构上的，不是靠标志位
+
+存进闪存的是 `web_uboot_netmode` / `_ipaddr` / `_netmask`，只在开机时由
+`netmode_load()` 读一次；`ipaddr` 与 `netmask` 是运行时状态。**不保存的改动只写
+后者。** 于是别处出于自己的理由跑的 `saveenv`（`/bootonce`、`/envreset`）没法顺
+手把一个临时地址变成永久的，而下次开机 `netmode_load()` 又会拿
+`web_uboot_ipaddr` 把 `ipaddr` 盖回去 —— 就算真被存进去了也不算数。
+
+「地址填错了就拔电源」是这个页面唯一的退路，这条得靠结构保证，不能靠一个记着
+「现在是不是临时状态」的标志位。
+
+从没设过 `web_uboot_netmode` 的板子（没进过这个页面）走默认：`server` 模式，
+`ipaddr` **原样不动** —— 那个值很可能是串口上手工设的，这个页面在被用到之前没有
+理由对它有意见。实践中就是默认环境里的 `192.168.1.1/24`。
+
+`client` 存下来的只有「模式」这一个决定，地址与掩码不存：租约不是这块板子的东
+西，下次开机重新要一个，而不是顶着别人的地址起来。
+
+页面上那行「**下次开机：……**」直接把 `/info` 回的 `saved` 对象念出来，没设过就
+念出厂默认。不保存要付什么代价，不用用户自己推。
+
+#### 一个端点
+
+`/netset` + `/netdhcp` + `/netdhcpd` 合成 `GET
+/netmode?mode=&ip=&mask=&save=`，答复 `ok <模式> <地址> <掩码> <saved|ram>`。
+仍然是延后执行的：答复必须从旧地址发出去，浏览器正连在那上面，从新地址发的包会
+被直接丢掉。
 
 ### 传了固件就等于恢复出厂，只换引导器不是
 
@@ -473,7 +555,7 @@ _no_ubi=echo ; echo "This flash carries no usable UBI. Leaving it alone." ; echo
 
 ### 日常更新引导器就不用勾了
 
-BL2 走 `mtd`，完全不碰 UBI；FIP 走 `httpd_write_fip`，它自己只换 `fip` 那一个卷，连 `rootfs_data` 都不动（`954`，见下）。**只要 `ubi part ubi` 挂得上，就不要开重建。**
+BL2 走 `mtd`，完全不碰 UBI；FIP 走 `web_uboot_write_fip`，它自己只换 `fip` 那一个卷，连 `rootfs_data` 都不动（`954`，见下）。**只要 `ubi part ubi` 挂得上，就不要开重建。**
 
 覆盖正在运行的 U-Boot 是安全的：SPI-NAND 不能 XIP，当前这份早就解压在 DRAM 里跑了，和 flash 上的副本没关系。
 
@@ -489,13 +571,13 @@ BL2 走 `mtd`，完全不碰 UBI；FIP 走 `httpd_write_fip`，它自己只换 `
 | `203-console-record-keep-pre-relocation-output` | 重定位后保留重定位前的 console 录制内容，`GET /log` 才能从横幅看起 |
 | `950-configs-xg-040g-md-enable-httpd` | MD defconfig：`PROT_TCP` / `CMD_HTTPD` / `CYCLIC`，`HTTPD_FACTORY_VOLS="ri:0x40000 bosa:0x40000"`，`HTTPD_FACTORY_MAC="ri:0x3e"`，`CMD_HTTPD_STOCK_RESTORE=y`，`CONSOLE_RECORD` 64 KiB（重定位前 2 KiB） |
 | `951-defenvs-xg-040g-md-httpd-recovery` | MD 触发路径，与两条 httpd 专用的 env 脚本 |
-| `952-xg-040g-md-bootmenu-web-recovery-branding` | MD 引导菜单署名、手动开服务的菜单项、`envver` 自动刷新、`ethaddr` 两道闸 |
-| `954-xg-040g-md-httpd-fip-preserve-rootfs-data` | MD defenv 加 `httpd_write_fip`（网页更新引导器不清配置） |
+| `952-xg-040g-md-bootmenu-web-recovery-branding` | MD 引导菜单署名、手动开服务的菜单项、`web_uboot_envver` 自动刷新、`ethaddr` 两道闸 |
+| `954-xg-040g-md-httpd-fip-preserve-rootfs-data` | MD defenv 加 `web_uboot_write_fip`（网页更新引导器不清配置） |
 | `960` / `961` / `962` | MF 的同一套：defconfig、触发路径、菜单 |
 
 页面本身不在补丁里手改：源文件是 fork 的 `package/boot/uboot-airoha/files/httpd/page.html`，`gen.py` 把它逐行转成 C 字符串塞进 `net/httpd.c` 的 `PAGE_BEGIN` / `PAGE_END` 之间。改页面 → 跑脚本 → 重新生成 `202`。
 
-0.1.x 里 `953`（刷回原厂）和 `954`（`httpd_write_fip`）各自带的 `net/httpd.c` 片段在 0.2.0 都并回了 `202`，理由和下面那段一样：它们改的是同一个我们自己新增的文件。剩下的按板差异全部退到 defconfig 与 defenv 里。
+0.1.x 里 `953`（刷回原厂）和 `954`（`web_uboot_write_fip`）各自带的 `net/httpd.c` 片段在 0.2.0 都并回了 `202`，理由和下面那段一样：它们改的是同一个我们自己新增的文件。剩下的按板差异全部退到 defconfig 与 defenv 里。
 
 `206` / `310`（DRAM 容量探测）编号挨着但**与网页救砖无关**，是独立的 bug 修复，影响所有 an7581 / an7583 设备 —— 见[设备变体 → 内存容量](variants.md#内存容量)。分开放是为了以后单独提上游时不用再拆。它们现在会把整个推导过程打到 console，所以「诊断」的串口日志段看得到 —— 唯一的交集就是这个。
 
@@ -516,13 +598,13 @@ check_buttons=if button reset ; then httpd ; fi              ← 原来是 run b
 boot_ubi=run boot_production ; run boot_httpd_forever        ← 原来是 boot_tftp_forever
 boot_httpd_forever=while true ; do httpd ; sleep 1 ; done    ← 新增
 _firstboot=... ; run check_buttons ; run ethaddr_factory ...  ← 开头插入按键检查
-httpd_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize
-httpd_format_ubi=ubi detach ; mtd erase ubi && ubi part ubi
+web_uboot_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize
+web_uboot_format_ubi=ubi detach ; mtd erase ubi && ubi part ubi
 ```
 
-`httpd_write_bl2` 用 `mtd write` 的 offset 参数让 mtd 自己跳过前 `0x800` 字节（BootROM 在那里找 FIP），省掉官方脚本里 `mw.b $loadaddr 0xff 0x800` 那一步 —— 因为 part 是**就地刷写**的，不搬到 `$loadaddr`。
+`web_uboot_write_bl2` 用 `mtd write` 的 offset 参数让 mtd 自己跳过前 `0x800` 字节（BootROM 在那里找 FIP），省掉官方脚本里 `mw.b $loadaddr 0xff 0x800` 那一步 —— 因为 part 是**就地刷写**的，不搬到 `$loadaddr`。
 
-`httpd_format_ubi` 是去掉 `reset` 的 `ubi_format`，好让同一次会话接着写卷。
+`web_uboot_format_ubi` 是去掉 `reset` 的 `ubi_format`，好让同一次会话接着写卷。
 
 **TFTP 一条没删**：bootmenu 的第 2、4、5、6 项照旧，`boot_tftp*` 全套变量都在。自动路径走浏览器，手动路径留 TFTP。
 
@@ -557,13 +639,13 @@ Press Ctrl-C to abort
 - **第 10 项画出来是「a.」不是「10.」。** 快捷键只有一个字符：1–9 之后接 a–z，0 留给 Exit。所以仓库地址写在标题里而不是藏在按键后面 —— 不按也要能看见，按下去才补上作者页。
 - **标题去掉了原来的 `( ( ( ... ) ) )`。** 标题从第 3 列画起（`bootmenu_print_entry` 用 `ANSI_CURSOR_POSITION`），而 `_bootmenu_update_title` 会把完整的 `$ver`（72 字符）追加在后面。80 列下留给 `$ver` 的只有 36 列，版本号后半截连 commit hash 一起被截掉；去掉那三对括号腾出 12 列，r 号和 hash 就都能看全了（日期仍会截，无所谓）。末尾补了 `\e[0m`，免得 `_bootmenu_update_title` 没跑时后面的输出继承亮白。
 - **第 9 项是红的**，和写引导器的那两项同色：它是刷机入口，且一旦进去，机器就离开菜单直到被中断。
-- **版本号写了两遍**：`bootmenu_title` 里一份（`952`），`net/httpd.c` 的 `WEB_VERSION` 一份（`202`）。env 是纯文本，看不见 C 宏。改版本要同时动这两个补丁（MF 还有 `962`），并把 `envver` 加一 —— 网页侧栏那个 `0.2.0` 用的就是后者。
+- **版本号写了两遍**：`bootmenu_title` 里一份（`952`），`net/httpd.c` 的 `WEB_VERSION` 一份（`202`）。env 是纯文本，看不见 C 宏。改版本要同时动这两个补丁（MF 还有 `962`），并把 `web_uboot_envver` 加一 —— 网页侧栏那个 `0.2.0` 用的就是后者。
 
-> **老机器升级引导器后看不到新菜单 —— `envver` 之后会自动处理。**
+> **老机器升级引导器后看不到新菜单 —— `web_uboot_envver` 之后会自动处理。**
 >
 > `CONFIG_ENV_IS_IN_UBI`：`ubootenv` 卷里存的是**完整一份**环境，加载时整个盖掉编译进固件的默认值。已经初始化过 env 的机器换了新 FIP，菜单还是旧的 —— 新加的 `bootmenu_8` / `bootmenu_9` 根本不在它的环境里。
 >
-> `952` 加了自动刷新（见下一节 [`envver`](#envver-新-u-boot-自己刷新落后的菜单)），**从 `envver=1` 这版固件开始**升级引导器就不用手动做什么了。手动的办法留着备用：菜单选 `0. Exit` 进命令行，跑：
+> `952` 加了自动刷新（见下一节 [`web_uboot_envver`](#envver-新-u-boot-自己刷新落后的菜单)），**从 `envver=1` 这版固件开始**升级引导器就不用手动做什么了。手动的办法留着备用：菜单选 `0. Exit` 进命令行，跑：
 >
 > ```
 > env default -a -k
@@ -577,19 +659,22 @@ Press Ctrl-C to abort
 >
 > 首次迁移过来的机器走 `_firstboot`，直接就是新的，不用管这一段。
 
-### `envver`：新 U-Boot 自己刷新落后的菜单
+### `web_uboot_envver`：新 U-Boot 自己刷新落后的菜单
 
-默认环境里带一个 `envver`，`board/airoha/an7581/an7581_rfb.c` 里挂一个 `EVT_POST_PREBOOT` 钩子：saved env 的 `envver` 落后于编译进去的默认值，就把描述菜单的那几个变量重新导入一遍，然后 `saveenv`。
+默认环境里带一个 `web_uboot_envver`，`board/airoha/an7581/an7581_rfb.c` 里挂一个 `EVT_POST_PREBOOT` 钩子：saved env 的 `web_uboot_envver` 落后于编译进去的默认值，就把描述菜单的那几个变量重新导入一遍，然后 `saveenv`。
 
 时机在 `preboot` 跑完之后、`bootdelay_process()` 和 `autoboot_command()` 画菜单之前 —— env 已加载，菜单还没画。
 
 重新导入的**只有**这些：
 
 ```
-envver  bootmenu_title  bootmenu_1..bootmenu_9  show_about
+web_uboot_envver  bootmenu_title  bootmenu_1..bootmenu_9  show_about
+web_uboot_write_bl2  web_uboot_write_fip  web_uboot_format_ubi
 ```
 
-运行时状态刻意不在列表里：`bootdelay` / `bootmenu_delay`（`_switch_to_menu` 把 0 抬到 3，重置会让菜单闪现即超时）、`bootmenu_0`（初始化后被换成 `bootmenu_0d` 的内容）、还有 `ethaddr` —— 它压根不在默认环境里，`env_set_default_vars()` 的 import 碰不到它。**这就是它比 `env default -a -k` 温和的地方**，后者会把 59 个变量全推平。
+运行时状态刻意不在列表里：`bootdelay` / `bootmenu_delay`（`_switch_to_menu` 把 0 抬到 3，重置会让菜单闪现即超时）、`bootmenu_0`（初始化后被换成 `bootmenu_0d` 的内容）、`ethaddr` —— 它压根不在默认环境里，`env_set_default_vars()` 的 import 碰不到它 —— 还有 `web_uboot_netmode` 那三个，它们是**用户自己选的网络设置**，不是这一版编译进去的默认值，导进来就等于把人家存好的地址推平。**这就是它比 `env default -a -k` 温和的地方**，后者会把 59 个变量全推平。
+
+三个 `web_uboot_write_*` 在列表里，因为它们确实是默认值：存在的意义就是让人能从串口看见并改写刷写步骤。跨过改名升级上来的机器，saved env 里只有旧的 `httpd_write_*`，新代码找不到就退回 `net/httpd.c` 里的内建副本 —— 行为一样，但那个「可以改写」的口子会悄悄消失，所以让刷新把新名字补进去。旧的那几个留着不动，无害。
 
 > **为什么放在启动时，而不是刷 FIP 的时候**
 >
@@ -597,13 +682,13 @@ envver  bootmenu_title  bootmenu_1..bootmenu_9  show_about
 >
 > 顺带解释了菜单第 5 项 `boot_tftp_write_fip` 为什么刷完要 `run reset_factory`：清空 env 卷不是「导入旧默认值」，是让新 U-Boot 启动时发现 env 无效、回落到自己的默认环境。那条路是对的，代价是 `ethaddr` 跟着一起没。
 
-改菜单时记得 `envver` 加一，否则老机器不会刷新。
+改菜单时记得 `web_uboot_envver` 加一，否则老机器不会刷新。
 
 > **刷新之后要自己把 `$ver` 补回标题。**
 >
 > 追加版本号的 `_bootmenu_update_title` 第一件事就是 `setenv _bootmenu_update_title` 把自己清空 —— 它只为「环境首次初始化」而存在。所以钩子重新导入 `bootmenu_title` 之后，saved env 里已经没有任何人能把版本号加回去，菜单会一直显示没有版本的标题。这是从 0.1.0 网页直接升上来的机器踩到的：菜单项全对，标题却光秃秃。
 >
-> 现在由钩子自己补。两条路不会重复追加：**环境被重建**时跑的是那个 env 脚本，而那种情况下 `envver` 恰好匹配、钩子不触发；**固件升级**时钩子触发，而脚本早已自删除。钩子放在共用的 an7581 board 文件里是安全的：别的板子默认环境里没有 `envver`，`env_get_default_into()` 返回负值就直接 return。`saveenv` 是尽力而为 —— 首次迁移会在 `_init_env` 建出 env 卷之前走到这里，而它本来就跑在默认环境上，不需要这次写入。
+> 现在由钩子自己补。两条路不会重复追加：**环境被重建**时跑的是那个 env 脚本，而那种情况下 `web_uboot_envver` 恰好匹配、钩子不触发；**固件升级**时钩子触发，而脚本早已自删除。钩子放在共用的 an7581 board 文件里是安全的：别的板子默认环境里没有 `web_uboot_envver`，`env_get_default_into()` 返回负值就直接 return。`saveenv` 是尽力而为 —— 首次迁移会在 `_init_env` 建出 env 卷之前走到这里，而它本来就跑在默认环境上，不需要这次写入。
 
 ### 刷回原厂与写入偏移（`CMD_HTTPD_STOCK_RESTORE`）
 
@@ -699,11 +784,11 @@ ubi_write_fip=run ubi_remove_rootfs ; ubi check fip && ubi remove fip ; \
 建回来，净收益是零 —— `vmt.c` 里 `ubi_remove_volume()` 把 `reserved_pebs` 还给 `avail_pebs`，
 `ubi_create_volume()` 紧接着又原样要回同样多。
 
-所以拆出一条独立的 `httpd_write_fip`（和 `httpd_write_bl2` 挨着 `mtd_write_bl2` 是同一个套路），
+所以拆出一条独立的 `web_uboot_write_fip`（和 `web_uboot_write_bl2` 挨着 `mtd_write_bl2` 是同一个套路），
 将来改动 TFTP 菜单那条重置流程、或是网页这条例行更新流程，都不会悄悄改掉另一条的行为：
 
 ```
-httpd_write_fip=if ubi check fip ; then ubi write $loadaddr fip $filesize ; else run ubi_write_fip ; fi
+web_uboot_write_fip=if ubi check fip ; then ubi write $loadaddr fip $filesize ; else run ubi_write_fip ; fi
 ```
 
 只有 `fip` **还不存在**时（首次迁移，那时 `rootfs_data` 同样还不存在）才需要建卷，
@@ -724,7 +809,7 @@ httpd_write_fip=if ubi check fip ; then ubi write $loadaddr fip $filesize ; else
 >
 > 参考量级：`fip` 卷预留 `0x100000`（1 MiB），实际的 `bl31-uboot.fip` 约 318 KiB，用掉 31%。
 
-**BL2 从头到尾不涉及。** `httpd_write_bl2` 是朴素的 `mtd erase bl2 && mtd write bl2`，
+**BL2 从头到尾不涉及。** `web_uboot_write_bl2` 是朴素的 `mtd erase bl2 && mtd write bl2`，
 操作的是 `bl2` 这个 mtd 分区（`0x0`~`0x20000`），完全在 `ubi` 分区（`0x20000` 往后）之外 ——
 而 `rootfs_data` 和其它所有 UBI 卷都住在后者里。升级时连着 FIP 一起刷 BL2，对配置没有风险。
 
@@ -781,7 +866,7 @@ httpd: refusing 0 byte upload
 ### 2. 救砖工具不能依赖 flash 上的 env
 
 ```
-## Error: "httpd_write_bl2" not defined
+## Error: "web_uboot_write_bl2" not defined
 ```
 
 机器上一次测试时 `_firstboot` 建过 `ubootenv` 卷并 `saveenv`，那份旧 env 会盖掉 fip 里编译进去的默认值。**救砖工具依赖 flash 上的 env，而 flash 上的 env 恰恰是最可能过时或损坏的那份** —— 需要救砖的时候，正是它靠不住的时候。
@@ -825,7 +910,7 @@ httpd: refusing 0 byte upload
 
 每次改动都跑三层，真机编译一次约 1.5 小时，所以前两层要在本地过：
 
-1. **页面** —— `files/httpd/test/` 里的 jsdom 用例，416 个，`cd files/httpd/test && npm install && npm test`（用例自己会先跑 `preview.py` 渲染，不会拿到过期的 HTML）。改动落在 httpd 目录时 CI 跟着跑，见 `.github/workflows/uboot-check.yml`（同一个 workflow 还会真把两块板的 U-Boot 交叉编出来）。覆盖：`/info` 填表与失败降级、每一页的确认框内容与拦截条件、实际提交的 `FormData` 字段集、多文件上传进度按累计长度定位、200 / 400 / 断网三种结局、「不重启」留页并靠心跳回报、备份下载的 URL 与越界拦截、环境变量的过滤与恢复默认、体检分组、心跳的两次失败判定与三种覆盖层、长时间静默只变点不弹框、整片下载是一个文件、传完报出 crc32 且多份往下排不覆盖、作者链接。跑的是真实的页面源文件，不是复制品
+1. **页面** —— `files/httpd/test/` 里的 jsdom 用例，464 个，`cd files/httpd/test && npm install && npm test`（用例自己会先跑 `preview.py` 渲染，不会拿到过期的 HTML）。改动落在 httpd 目录时 CI 跟着跑，见 `.github/workflows/uboot-check.yml`（同一个 workflow 还会真把两块板的 U-Boot 交叉编出来）。覆盖：`/info` 填表与失败降级、每一页的确认框内容与拦截条件、实际提交的 `FormData` 字段集、多文件上传进度按累计长度定位、200 / 400 / 断网三种结局、「不重启」留页并靠心跳回报、备份下载的 URL 与越界拦截、环境变量的过滤与恢复默认、体检分组、心跳的两次失败判定与三种覆盖层、长时间静默只变点不弹框、整片下载是一个文件、传完报出 crc32 且多份往下排不覆盖、端口链路轮询（切到网络那一段才开始、切走就停、桩里改了链路状态表跟着变、轮询回来不覆盖正在编辑的表单）、三种网络模式互斥与各自的字段显隐、服务器档把末位改成 .1 且掩码定成 /24（页面预览与设备回执两处都验）、「不保存则下次开机回到 X」那句话跟着 `saved` 走、`/netmode` 五种回执、写完与改过环境之后体检结果作废并重跑、作者链接。跑的是真实的页面源文件，不是复制品
 2. **编译** —— 整个补丁序列打到纯净的 U-Boot 2026.07 上，在 Docker 里（本机已有的 `ghcr.io/openwrt/buildbot/buildworker` 镜像加 `gcc-aarch64-linux-gnu`）对 MD、MF 两个 defconfig 各编一遍 `net/httpd.o` 与完整 `u-boot.bin`。0.1.x 只做语法级检查，漏过一次把 `flash_part()` 圈进 `#if` 的编译错误，这一层就是为它加的
 
    没有 Docker 的机器上还有一层兜底：`net/httpd.c` 从 `202` 里抽成真正的 `.c` 文件来改（`+` 行进出，行数由脚本重算，round-trip 逐字节比对过），再跑一个不需要编译器的静态检查 —— 去掉注释与字符串后的括号配对、`printf` 族的格式符与实参个数、有没有定义了没用到的 static 函数。先在改动前的版本上跑一遍当对照组。**这不能替代第 2 层**，它查不出 U-Boot API 的签名对不对
