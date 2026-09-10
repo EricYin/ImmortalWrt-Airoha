@@ -20,12 +20,12 @@
 | --- | --- |
 | 想主动刷机 | **按住 reset 上电**，一直按着，等面板五个绿灯开始**流水**再松手（约 15 秒） |
 | 机器起不来了 | **什么都不用做** —— 从 NAND 引导失败后会自己循环起网页，插上网线即可 |
-| 闪存还是原厂布局 | **什么都不用做** —— `_firstboot` 里 `ubi part ubi` 挂不上就走 `_no_ubi`，不动闪存直接起网页 |
+| 闪存还是原厂布局 | **什么都不用做** —— `_firstboot` 里 `ubi part ubi` 挂不上就走 `web_uboot_no_ubi`，不动闪存直接起网页 |
 | 手上接着串口 | 引导菜单上用 ↑/↓ **选到第 9 项** 回车 —— `bootmenu_8` 直接 `httpd`，不经 `_firstboot`，不用掐 reset 的时机 |
 
 这段时间里有一部分是 bootmenu 的等待。`button reset` 读的是那一瞬间的电平，不是累计计时，所以「一直按住」比「按几下」可靠。**流水灯亮起来就是进去了。**
 
-第三条是**首次迁移**唯一不用掐时机的路，见下面第 ② 步。第四条走的是另一条代码路径：`check_buttons` 与 `_no_ubi` 都在 `_firstboot` 里，而第 9 项是 bootmenu 自己的条目，互不依赖。
+第三条是**首次迁移**唯一不用掐时机的路，见下面第 ② 步。第四条走的是另一条代码路径：`check_buttons` 与 `web_uboot_no_ubi` 都在 `_firstboot` 里，而第 9 项是 bootmenu 自己的条目，互不依赖。
 
 ### 传文件
 
@@ -71,6 +71,11 @@
 
 **拦截。** 页面与 C 侧 `httpd_validate()` 各拦一遍：页面不是唯一的客户端，而且页面只认自己那份 `/info`，拿不到或过期了就形同虚设。C 侧在回 200 之前查。查的顺序：勾了「重建 UBI」却没带 U-Boot 文件，400 `rebuilding UBI without a U-Boot FIP would leave nothing to boot`；勾了「重建 UBI」却没带 BL2，400 `rebuilding UBI erases what a factory BL2 loads after itself; upload the BL2 preloader too`（见下）；不重建、也不是整片刷回原厂时，按 `/info` 的方式先挂一次 UBI。挂不上，凡是要写卷的（固件、U-Boot、出厂卷、任意卷）都拒。0.3.0 起少了两条：「只写 BL2」和「没有 `fip` 卷又不带 U-Boot」原来也拒，理由都是「写完一重启就起不来」—— 现在写完不重启了，拒下来只是拦住用户把两份文件里的第一份放进去，所以改成页面上的一句提醒。页面的确认框仍把这几条做成硬错误（不出「仍要写入」）：引导升级没有 UBI 时必须勾重建，有 UBI 没 `fip` 卷时必须带 U-Boot 文件，勾了重建时 BL2 与 U-Boot 都必须带。
 
+**BL2 与 FIP 的尺寸门。** 出厂卷一直有精确尺寸门（`ri` / `bosa` 差一个字节都拒），这两个到 0.3.0 才有。两条写入配方都是**先擦后写** ——
+`web_uboot_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize` —— 所以装不下的文件不是「拒绝写入」，是「擦完了才失败」，留下半截引导器。判据两边一样：BL2 比 `bl2` 分区自 `0x800` 起放得下的多就拒；FIP 比 `fip` 卷的预留多就拒，勾了重建时按 `ubi_write_fip` 的创建尺寸 `0x100000` 算 —— 现存那个卷马上要被抹掉，它的预留说明不了什么。数是 `/info` 给的，所以页面也拦得住，不必等设备回 400。
+
+**出厂卷不存在时会建出来。** `fvol_*` 原来传 `create=0`，只 `ubi write`。但重建 UBI 留下的是一片空 UBI —— `ri` / `bosa` 要等下次开机 `_init_env` 里的 `ubi_create_board_data` 才会出现，而「把备份写回去」恰恰发生在那次开机之前。于是文档里那条「备份 → 重建 → 写回 → 重启」的流程，第三步必失败。现在和别的卷一样按需创建，尺寸由上面那道精确尺寸门管着。
+
 **重建 UBI 为什么连 BL2 一起要。** 这条是后补的，补之前那个组合是必砖：
 
 | | 本布局 | 原厂 |
@@ -88,7 +93,7 @@
 
 **启动日志（`GET /log`）。** 打开 U-Boot 自带的 `CONFIG_CONSOLE_RECORD`（64 KiB），把 `gd->console_out` 原样吐出来，页面去掉 ANSI 转义后显示，可复制。`203` 补上一处上游的遗漏：重定位后 `console_record_init()` 重新分配缓冲，重定位前录的横幅、CPU、DRAM 三行会丢，现在先搬过来。缓冲满了不覆盖、只丢新的，末尾标一句「日志缓冲已满」—— 64 KiB 对一次救砖绰绰有余。侧栏单独一页，进入时自动读。`/info` 多一个 `log` 字段，没开录制的固件不显示这一页。重定位前那段录在早期 malloc 区的小缓冲里，显式设为 2 KiB（`CONSOLE_RECORD_OUT_SIZE_F`，上游默认 1 KiB；实机重定位前只打横幅、CPU、DRAM 约 120 字节），搬完后清掉它留下的溢出标志，免得 64 KiB 的缓冲被误报为满。
 
-菜单标题与 `show_about` 跟着升到 0.3.0。环境变量这一版全部改名到 `web_uboot_` 前缀，版本号自己也从 `envver` 变成 `web_uboot_envver`（值 5 → 6）—— 名字换掉本身就是迁移信号：老环境里只有 `envver`，新代码读不到 `web_uboot_envver` 就判定落后，当场刷新并写进新名字。旧的那几个留着不删，无害。
+菜单标题与 `web_uboot_show_about` 跟着升到 0.3.0。环境变量这一版全部改名到 `web_uboot_` 前缀（唯一的例外是 `ubi_write_production`：它和串口 TFTP 升级共用同一条脚本，改名就是分叉），版本号自己也从 `envver` 变成 `web_uboot_envver`（值 5 → 6）—— 名字换掉本身就是迁移信号：老环境里只有 `envver`，新代码读不到 `web_uboot_envver` 就判定落后，当场刷新并写进新名字。旧的那几个留着不删，无害。
 
 **先看再写。** `files/httpd/preview.py page.html` 生成一个能直接在浏览器里打开的预览：所有请求由页内的桩应答，右下角切换设备状态（正常 / 没有 UBI / 没有 `fip` 卷 / 不带日志 / `/info` 失败）与提交结局（成功 / 400 / 断线）。改页面先在这里对齐布局与措辞，再进 C。桩给的数据就是真实端点给的数据，所以对齐的是同一份东西。
 
@@ -549,17 +554,17 @@ reset 按不按都行 —— 下一步不需要掐时机。
 `_firstboot` 在碰 flash 之前连着两道闸，任意一道拦下都落到网页：
 
 ```
-_firstboot=setenv _firstboot ; run check_buttons ; ubi part ubi || run _no_ubi ; run ethaddr_factory ; ...
-_no_ubi=echo ; echo "This flash carries no usable UBI. Leaving it alone." ; echo "..." ; setenv bootmenu_0 "Continue to web recovery at http://$ipaddr=run boot_httpd_forever" ; bootmenu 3 ; run boot_httpd_forever
+_firstboot=setenv _firstboot ; run check_buttons ; ubi part ubi || run web_uboot_no_ubi ; run ethaddr_factory ; ...
+web_uboot_no_ubi=echo ; echo "This flash carries no usable UBI. Leaving it alone." ; echo "..." ; setenv bootmenu_0 "Continue to web recovery at http://$ipaddr=run web_uboot_boot_forever" ; bootmenu 3 ; run web_uboot_boot_forever
 ```
 
 **两句 echo 的引号是必须的，不是排版。** 这两块板的 defconfig 都是 `CONFIG_SYS_MAXARGS=8`，而 `echo` 是按 `CONFIG_SYS_MAXARGS` 注册 `maxargs` 的：`cmd_process()` 见 `argc > maxargs` 就直接回 `CMD_RET_USAGE`，于是串口上打出的是 `echo` 的用法说明而不是那句话。不加引号时这两条分别是 10 个和 15 个参数，两条都中招 —— 首刷实测就是两坨 usage。加引号后整句是一个 argv，`argc=2`，与句子长短无关。
 
-`_no_ubi` 里那句 `setenv bootmenu_0` 是这段能成立的关键（标题写成「Continue to web recovery」而不是照抄第 9 项，否则菜单上会并排出现两条同名条目）：`bootmenu_default=0`，而未初始化环境里的 `bootmenu_0` 是「Initialize environment.=run _firstboot」—— 菜单一超时就会绕回 `_firstboot`，再挂不上 UBI、再进菜单，转圈。把第 1 项当场换成「起网页」，超时执行的就是我们要的那条，且它 `while true` 不返回。改的是内存里的副本，没有 `saveenv`，下次开机不留痕。结尾那句 `run boot_httpd_forever` 是兜底：用户在菜单上选了 Exit 或选了一条会返回的条目时，仍然落到网页，而不是继续往下走进 `ubi_format`。
+`web_uboot_no_ubi` 里那句 `setenv bootmenu_0` 是这段能成立的关键（标题写成「Continue to web recovery」而不是照抄第 9 项，否则菜单上会并排出现两条同名条目）：`bootmenu_default=0`，而未初始化环境里的 `bootmenu_0` 是「Initialize environment.=run _firstboot」—— 菜单一超时就会绕回 `_firstboot`，再挂不上 UBI、再进菜单，转圈。把第 1 项当场换成「起网页」，超时执行的就是我们要的那条，且它 `while true` 不返回。改的是内存里的副本，没有 `saveenv`，下次开机不留痕。结尾那句 `run web_uboot_boot_forever` 是兜底：用户在菜单上选了 Exit 或选了一条会返回的条目时，仍然落到网页，而不是继续往下走进 `ubi_format`。
 
 | 走法 | 做什么 | 代价 |
 | --- | --- | --- |
-| **什么都不做** | `ubi part ubi` 在原厂布局上挂不上 → `_no_ubi` 把菜单停 3 秒，超时自动进 `boot_httpd_forever` | 不用抢，超时就是你要的 |
+| **什么都不做** | `ubi part ubi` 在原厂布局上挂不上 → `web_uboot_no_ubi` 把菜单停 3 秒，超时自动进 `web_uboot_boot_forever` | 不用抢，超时就是你要的 |
 | **reset 一直按着** | `run check_buttons` 接住，同样进 `httpd` | 没有时间窗口 |
 | **在那 3 秒里按任意键** | 停在菜单上，可以改走 TFTP 或进命令行 | 只给串口用户 |
 
@@ -630,8 +635,8 @@ BL2 走 `mtd`，完全不碰 UBI；FIP 走 `web_uboot_write_fip`，它自己只�
 
 ```
 check_buttons=if button reset ; then httpd ; fi              ← 原来是 run boot_tftp
-boot_ubi=run boot_production ; run boot_httpd_forever        ← 原来是 boot_tftp_forever
-boot_httpd_forever=while true ; do httpd ; sleep 1 ; done    ← 新增
+boot_ubi=run boot_production ; run web_uboot_boot_forever        ← 原来是 boot_tftp_forever
+web_uboot_boot_forever=while true ; do httpd ; sleep 1 ; done    ← 新增
 _firstboot=... ; run check_buttons ; run ethaddr_factory ...  ← 开头插入按键检查
 web_uboot_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize
 web_uboot_format_ubi=ubi detach ; mtd erase ubi && ubi part ubi
@@ -650,8 +655,8 @@ web_uboot_format_ubi=ubi detach ; mtd erase ubi && ubi part ubi
 ```
 bootmenu_title=  \e[1;39mAiroha Web U-Boot 0.2.0\e[0m    ← 加了版本号，并去掉原来的三对括号
 bootmenu_8=\e[31mStart web recovery server (http://192.168.1.1)\e[0m=httpd ; run bootmenu_confirm_return
-bootmenu_9=About - github.com/Loong1996/ImmortalWrt-Airoha=run show_about ; run bootmenu_confirm_return
-show_about=echo ; echo Web recovery U-Boot by Loong ; echo Guide: ... ; echo Project: ... ; echo Author: ... ; echo
+bootmenu_9=About - github.com/Loong1996/ImmortalWrt-Airoha=run web_uboot_show_about ; run bootmenu_confirm_return
+web_uboot_show_about=echo ; echo Web recovery U-Boot by Loong ; echo Guide: ... ; echo Project: ... ; echo Author: ... ; echo
 ```
 
 `httpd_start_server()` 开头也照着打一遍，给看串口、不看网页的人：
@@ -703,11 +708,15 @@ Press Ctrl-C to abort
 重新导入的**只有**这些：
 
 ```
-web_uboot_envver  bootmenu_title  bootmenu_1..bootmenu_9  show_about
+web_uboot_envver  bootmenu_title  bootmenu_1..bootmenu_9
+web_uboot_show_about
 web_uboot_write_bl2  web_uboot_write_fip  web_uboot_format_ubi
+boot_ubi  web_uboot_boot_forever  check_buttons
 ```
 
 运行时状态刻意不在列表里：`bootdelay` / `bootmenu_delay`（`_switch_to_menu` 把 0 抬到 3，重置会让菜单闪现即超时）、`bootmenu_0`（初始化后被换成 `bootmenu_0d` 的内容）、`ethaddr` —— 它压根不在默认环境里，`env_set_default_vars()` 的 import 碰不到它 —— 还有 `web_uboot_netmode` 那三个，它们是**用户自己选的网络设置**，不是这一版编译进去的默认值，导进来就等于把人家存好的地址推平。**这就是它比 `env default -a -k` 温和的地方**，后者会把 59 个变量全推平。
+
+最后那三个是 0.3.0 才补进去的，补之前版本号那一下对它们是空转：升级上来的机器拿到了新菜单项，可**引导失败仍然回退 TFTP、复位键仍然进 TFTP** —— 而这两条恰好是没有串口的人唯一能用的入口。它们和 `web_uboot_write_*` 同类，是固件默认值而不是用户设置，所以进列表；`bootdelay`、`bootmenu_0`、`ethaddr` 是用户那一侧的，仍然不进。
 
 三个 `web_uboot_write_*` 在列表里，因为它们确实是默认值：存在的意义就是让人能从串口看见并改写刷写步骤。跨过改名升级上来的机器，saved env 里只有旧的 `httpd_write_*`，新代码找不到就退回 `net/httpd.c` 里的内建副本 —— 行为一样，但那个「可以改写」的口子会悄悄消失，所以让刷新把新名字补进去。旧的那几个留着不动，无害。
 
