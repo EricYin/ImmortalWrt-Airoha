@@ -326,14 +326,6 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    - name: Inject Author Info(写入作者信息)
-      run: |
-        # 在默认 SSH banner 和 /usr/lib/os-release（procd 把 OPENWRT_RELEASE 报成
-        # ubus system.board 的 description，LuCI 概览「固件版本」读的是它）末尾追加
-        # 作者信息。不能用 make FILES=：全量编译读的是源码树里的 files/，FILES 是
-        # ImageBuilder 的接口，写成命令行变量还会盖掉 kmod 打包用的同名变量。
-        python3 "$GITHUB_WORKSPACE/scripts/inject-author-info.py" "$OPENWRT_PATH"
-
     - name: Load Custom Configuration(加载自定义配置)
       run: |
         # 用 cp 而非 mv：保留带注释的原始配置，供后续生成自定义软件包清单
