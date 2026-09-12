@@ -199,12 +199,12 @@ jobs:
           xg-040g-mf)
             DEVICE_SUBTARGET=an7583
             MODEL_TAG=XG-040G-MF
-            CONFIG_FILE=config/xg-040g-mf-master.config
+            CONFIG_FILE=config/xg-040g-mf-master2.config
             ;;
           xg-040g-md)
             DEVICE_SUBTARGET=an7581
             MODEL_TAG=XG-040G-MD
-            CONFIG_FILE=config/xg-040g-md-master.config
+            CONFIG_FILE=config/xg-040g-md-master2.config
             ;;
           *) echo "::error::不支持的 device=$DEVICE"; exit 1 ;;
         esac
