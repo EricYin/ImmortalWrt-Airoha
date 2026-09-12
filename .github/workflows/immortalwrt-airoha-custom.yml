@@ -313,6 +313,10 @@ jobs:
           exit 1
         fi
 
+        cd $GITHUB_WORKSPACE/packages
+        chmod +x $GITHUB_WORKSPACE/scripts/update-packages.sh
+        bash $GITHUB_WORKSPACE/scripts/update-packages.sh     
+  
         cd $OPENWRT_PATH
         # 本仓库 packages/ 下的包（luci-app-airoha-npu）挂成 src-link feed，
         # 不进源码仓库。feeds.conf 优先于 feeds.conf.default。
