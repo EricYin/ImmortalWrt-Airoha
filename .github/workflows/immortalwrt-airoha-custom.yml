@@ -76,7 +76,7 @@ env:
   DEVICE_TARGET: airoha
   # 默认值；由 Generate Variables 按机型覆写（MF 是 an7583）
   DEVICE_SUBTARGET: an7581
-  CONFIG_FILE: config/xg-040g-md-master.config
+  CONFIG_FILE: config/xg-040g-md-master2.config
   CACHE_TOOLCHAIN: true
   UPLOAD_BIN_DIR: false
   FIRMWARE_RELEASE: true
