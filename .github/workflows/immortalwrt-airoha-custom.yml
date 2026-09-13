@@ -31,7 +31,7 @@ on:
       dram_size:
         description: '内存上限（默认自适应，U-Boot 探测实际颗粒；选具体档位只会把系统往小里限，用于对照实验）'
         required: true
-        default: 'auto'
+        default: '512M'
         type: choice
         options:
           - auto
