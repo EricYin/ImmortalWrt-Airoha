@@ -80,7 +80,7 @@ env:
   CACHE_TOOLCHAIN: true
   UPLOAD_BIN_DIR: false
   FIRMWARE_RELEASE: true
-  TZ: Asia/Shanghai
+  #TZ: Asia/Shanghai
 
 jobs:
   Build:
@@ -117,7 +117,8 @@ jobs:
         sudo -E apt -yqq autoclean
         sudo -E apt -yqq clean
         sudo -E systemctl daemon-reload
-        sudo timedatectl set-timezone "$TZ"
+        #sudo timedatectl set-timezone "$TZ"
+        sudo -E timedatectl set-timezone "Asia/Shanghai"
 
     - name: Combine Disks(合并磁盘)
       uses: easimon/maximize-build-space@master
