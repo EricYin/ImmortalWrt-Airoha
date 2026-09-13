@@ -80,6 +80,7 @@ env:
   CACHE_TOOLCHAIN: true
   UPLOAD_BIN_DIR: false
   FIRMWARE_RELEASE: true
+  WRT_IP: 192.168.50.233
   #TZ: Asia/Shanghai
 
 jobs:
@@ -256,6 +257,8 @@ jobs:
         echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
         echo "MODEL_TAG=$MODEL_TAG" >> $GITHUB_ENV
+        echo "WRT_NAME=$MODEL_TAG" >> $GITHUB_ENV
+        echo "WRT_DATE=$(TZ=UTC-8 date +"%y.%m.%d-%H.%M.%S")" >> $GITHUB_ENV
         echo "RELEASE_TAG=${MODEL_TAG}-${FLAVOR}-$DRAM_SIZE-$(date +"%Y%m%d")-${{ github.run_number }}" >> $GITHUB_ENV
         # 测试分支与手动勾了 pre-release 的构建（客户定制、试验固件）照发 Release
         # 方便下载，但标成 pre-release，不盖掉 GitHub Latest；教程的下载列表只认正式
@@ -383,6 +386,7 @@ jobs:
         print("附加软件包 移除: %s" % (" ".join(rm) or "(无)"))
         PY
         . "$RUNNER_TEMP/extra.sh"
+        $GITHUB_WORKSPACE/scripts/setting.sh
         make defconfig
         grep -q "^CONFIG_TARGET_airoha_${DEVICE_SUBTARGET}_DEVICE_${DEVICE_SYMBOL}=y" .config \
           || { echo "::error::defconfig 后设备符号丢失，$DEVICE_SYMBOL 在该源码分支中可能不存在"; exit 1; }
