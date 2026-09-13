@@ -386,7 +386,8 @@ jobs:
         print("附加软件包 移除: %s" % (" ".join(rm) or "(无)"))
         PY
         . "$RUNNER_TEMP/extra.sh"
-        $GITHUB_WORKSPACE/scripts/setting.sh
+        chmod +x $GITHUB_WORKSPACE/scripts/setting.sh
+        bash $GITHUB_WORKSPACE/scripts/setting.sh
         make defconfig
         grep -q "^CONFIG_TARGET_airoha_${DEVICE_SUBTARGET}_DEVICE_${DEVICE_SYMBOL}=y" .config \
           || { echo "::error::defconfig 后设备符号丢失，$DEVICE_SYMBOL 在该源码分支中可能不存在"; exit 1; }
