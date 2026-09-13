@@ -7,7 +7,7 @@
 get_status() {
 	# === NPU Status ===
 	# Read the actually-loaded NPU firmware path from DTS (firmware-name property).
-	local npu_fw=""
+	local npu_fw="/lib/firmware/airoha/en7583_npu_rv32.bin"
 	local npu_dt="/proc/device-tree/soc/npu@1e900000/firmware-name"
 	if [ -f "$npu_dt" ]; then
 		# firmware-name is a string list (null-separated). First entry is the rv32 code.
