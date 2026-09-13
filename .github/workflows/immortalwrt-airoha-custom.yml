@@ -314,10 +314,6 @@ jobs:
           exit 1
         fi
 
-        cd $OPENWRT_PATH/package/
-        chmod +x $GITHUB_WORKSPACE/scripts/update-packages.sh
-        bash $GITHUB_WORKSPACE/scripts/update-packages.sh     
-  
         cd $OPENWRT_PATH
         # 本仓库 packages/ 下的包（luci-app-airoha-npu）挂成 src-link feed，
         # 不进源码仓库。feeds.conf 优先于 feeds.conf.default。
@@ -327,6 +323,10 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
+        cd $OPENWRT_PATH/package/
+        chmod +x $GITHUB_WORKSPACE/scripts/update-packages.sh
+        bash $GITHUB_WORKSPACE/scripts/update-packages.sh     
+  
     - name: Load Custom Configuration(加载自定义配置)
       run: |
         # 用 cp 而非 mv：保留带注释的原始配置，供后续生成自定义软件包清单
