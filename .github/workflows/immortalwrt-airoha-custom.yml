@@ -15,7 +15,7 @@ on:
       device:
         description: '机型'
         required: true
-        default: 'xg-040g-md'
+        default: 'xg-040g-mf'
         type: choice
         options:
           - xg-040g-md
